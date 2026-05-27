@@ -1,0 +1,33 @@
+2026-05-26 21:24:41,073 - __main__ - INFO - ==================================================
+2026-05-26 21:24:41,073 - __main__ - INFO - 🤖 Бот запущен
+2026-05-26 21:24:41,074 - __main__ - INFO - 👑 Админы: [456884878]
+2026-05-26 21:24:41,074 - __main__ - INFO - ==================================================
+2026-05-26 21:24:41,077 - database - INFO - Создан бэкап БД: backups/shop_20260526_212441.db
+2026-05-26 21:24:41,077 - aiogram.dispatcher - INFO - Start polling
+2026-05-26 21:24:41,278 - aiogram.dispatcher - INFO - Run polling for bot @football365by_bot id=8841031525 - '365footballBYbot'
+2026-05-26 21:25:21,090 - __main__ - INFO - Пользователь 456884878 запустил бота
+2026-05-26 21:25:21,382 - aiogram.event - INFO - Update id=308022427 is handled. Duration 292 ms by bot id=8841031525
+2026-05-26 21:25:39,076 - aiogram.event - INFO - Update id=308022428 is handled. Duration 92 ms by bot id=8841031525
+2026-05-26 21:25:51,530 - database - ERROR - Ошибка при получении товаров с размерами: no such column: is_available
+2026-05-26 21:25:51,722 - aiogram.event - INFO - Update id=308022429 is handled. Duration 195 ms by bot id=8841031525
+2026-05-26 22:00:24,605 - aiogram.dispatcher - INFO - Polling stopped
+2026-05-26 22:00:24,606 - aiogram.dispatcher - ERROR - Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
+2026-05-26 22:00:24,607 - aiogram.dispatcher - WARNING - Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = 8841031525)
+2026-05-26 22:00:24,873 - __main__ - INFO - Бот остановлен
+2026-05-26 22:00:24,874 - aiogram.dispatcher - INFO - Polling stopped for bot @football365by_bot id=8841031525 - '365footballBYbot'
+2026-05-26 22:00:29,991 - __main__ - INFO - ==================================================
+2026-05-26 22:00:29,991 - __main__ - INFO - 🤖 Бот запущен
+2026-05-26 22:00:29,991 - __main__ - INFO - 👑 Админы: [456884878]
+2026-05-26 22:00:29,991 - __main__ - INFO - ==================================================
+2026-05-26 22:00:29,992 - database - INFO - Создан бэкап БД: backups/shop_20260526_220029.db
+2026-05-26 22:00:29,992 - aiogram.dispatcher - INFO - Start polling
+2026-05-26 22:00:30,184 - aiogram.dispatcher - INFO - Run polling for bot @football365by_bot id=8841031525 - '365footballBYbot'
+2026-05-26 22:25:35,569 - aiogram.event - INFO - Update id=308022430 is handled. Duration 207 ms by bot id=8841031525
+2026-05-26 22:25:42,650 - aiogram.event - INFO - Update id=308022431 is handled. Duration 82 ms by bot id=8841031525
+2026-05-27 13:09:11,892 - __main__ - INFO - ==================================================
+2026-05-27 13:09:11,892 - __main__ - INFO - 🤖 Бот запущен
+2026-05-27 13:09:11,893 - __main__ - INFO - 👑 Админы: [456884878]
+2026-05-27 13:09:11,893 - __main__ - INFO - ==================================================
+2026-05-27 13:09:11,894 - database - INFO - Создан бэкап БД: backups/shop_20260527_130911.db
+2026-05-27 13:09:11,894 - aiogram.dispatcher - INFO - Start polling
+2026-05-27 13:09:12,125 - aiogram.dispatcher - INFO - Run polling for bot @football365by_bot id=8841031525 - '365footballBYbot'
