@@ -1,3 +1,13 @@
-BOT_TOKEN = "8841031525:AAENc3vXNRbezs0eD85rpZmnq9mNykA618g"
-OWNER_ID = 456884878
-ADMIN_IDS = [456884878]
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+ADMIN_IDS = [
+    int(x)
+    for x in os.getenv("ADMIN_IDS", "").split(",")
+    if x
+]
+

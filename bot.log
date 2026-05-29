@@ -31,3 +31,32 @@
 2026-05-27 13:09:11,894 - database - INFO - Создан бэкап БД: backups/shop_20260527_130911.db
 2026-05-27 13:09:11,894 - aiogram.dispatcher - INFO - Start polling
 2026-05-27 13:09:12,125 - aiogram.dispatcher - INFO - Run polling for bot @football365by_bot id=8841031525 - '365footballBYbot'
+2026-05-27 14:03:40,075 - aiogram.dispatcher - INFO - Polling stopped
+2026-05-27 14:03:40,079 - aiogram.dispatcher - ERROR - Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
+2026-05-27 14:03:40,080 - aiogram.dispatcher - WARNING - Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = 8841031525)
+2026-05-27 14:03:40,335 - __main__ - INFO - Бот остановлен
+2026-05-27 14:03:40,345 - aiogram.dispatcher - INFO - Polling stopped for bot @football365by_bot id=8841031525 - '365footballBYbot'
+2026-05-27 14:07:01,051 - __main__ - INFO - ==================================================
+2026-05-27 14:07:01,052 - __main__ - INFO - 🤖 Бот запущен
+2026-05-27 14:07:01,052 - __main__ - INFO - 👑 Админы: [456884878]
+2026-05-27 14:07:01,052 - __main__ - INFO - ==================================================
+2026-05-27 14:07:01,053 - database - INFO - Создан бэкап БД: backups/shop_20260527_140701.db
+2026-05-27 14:07:01,053 - aiogram.dispatcher - INFO - Start polling
+2026-05-27 14:07:01,258 - aiogram.dispatcher - INFO - Run polling for bot @football365by_bot id=8841031525 - '365footballBYbot'
+2026-05-27 14:07:15,563 - __main__ - INFO - Пользователь 456884878 запустил бота
+2026-05-27 14:07:15,911 - aiogram.event - INFO - Update id=308022432 is handled. Duration 348 ms by bot id=8841031525
+2026-05-27 14:07:18,369 - database - ERROR - Ошибка при получении товаров с размерами: no such column: is_available
+2026-05-27 14:07:18,501 - aiogram.event - INFO - Update id=308022433 is handled. Duration 138 ms by bot id=8841031525
+2026-05-27 14:07:24,439 - database - ERROR - Ошибка при получении товаров с размерами: no such column: is_available
+2026-05-27 14:07:24,552 - aiogram.event - INFO - Update id=308022434 is handled. Duration 118 ms by bot id=8841031525
+2026-05-27 14:07:27,294 - aiogram.event - INFO - Update id=308022435 is handled. Duration 179 ms by bot id=8841031525
+2026-05-27 14:07:29,265 - aiogram.event - INFO - Update id=308022436 is handled. Duration 100 ms by bot id=8841031525
+2026-05-27 14:07:30,605 - aiogram.event - INFO - Update id=308022437 is handled. Duration 80 ms by bot id=8841031525
+2026-05-27 14:07:32,730 - aiogram.event - INFO - Update id=308022438 is handled. Duration 85 ms by bot id=8841031525
+2026-05-27 14:07:35,155 - aiogram.event - INFO - Update id=308022439 is handled. Duration 75 ms by bot id=8841031525
+2026-05-27 14:07:36,171 - aiogram.event - INFO - Update id=308022440 is handled. Duration 90 ms by bot id=8841031525
+2026-05-27 14:07:45,090 - aiogram.dispatcher - INFO - Polling stopped
+2026-05-27 14:07:45,091 - aiogram.dispatcher - ERROR - Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
+2026-05-27 14:07:45,091 - aiogram.dispatcher - WARNING - Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = 8841031525)
+2026-05-27 14:07:45,343 - __main__ - INFO - Бот остановлен
+2026-05-27 14:07:45,343 - aiogram.dispatcher - INFO - Polling stopped for bot @football365by_bot id=8841031525 - '365footballBYbot'

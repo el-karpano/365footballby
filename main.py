@@ -1,694 +1,436 @@
 import asyncio
 import logging
-import sys
-from datetime import datetime
-from functools import wraps
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command, StateFilter
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums.parse_mode import ParseMode
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import (
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
+from aiogram.utils.media_group import MediaGroupBuilder
+
+from config import ADMIN_IDS, BOT_TOKEN
 from database import (
-    add_product, add_size, delete_size, get_all_products, 
-    delete_product, get_product_with_sizes_and_prices,
-    get_product_with_photo, save_order, get_orders_count, backup_db,
-    get_top_products, get_top_sizes, get_sales_by_period  
+    add_product,
+    add_size,
+    delete_product,
+    delete_size,
+    get_all_products,
+    get_product_photos,
+    get_product_with_sizes_and_prices,
+    get_sizes_of_product,
+    save_order,
+    get_top_products,
+    get_top_sizes,
+    get_total_orders,
+    get_total_revenue,
+    get_products_count,
+    get_product_by_index,
 )
-from config import BOT_TOKEN, ADMIN_IDS
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums.parse_mode import ParseMode
 
-# =========================
-# НАСТРОЙКА ЛОГИРОВАНИЯ
-# =========================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# =========================
-# ДЕКОРАТОР ДЛЯ ОБРАБОТКИ ОШИБОК
-# =========================
-
-def handle_errors(func):
-    """Декоратор для обработки ошибок в хендлерах"""
-    @wraps(func)
-    async def wrapper(message: Message, *args, **kwargs):
-        try:
-            return await func(message, *args, **kwargs)
-        except Exception as e:
-            logger.error(f"Ошибка в {func.__name__}: {e}", exc_info=True)
-            await message.answer(
-                "❌ Произошла техническая ошибка.\n"
-                "Пожалуйста, попробуйте позже или используйте /cancel\n"
-                "Если ошибка повторяется, сообщите администратору."
-            )
-    return wrapper
-
-# =========================
-# ИНИЦИАЛИЗАЦИЯ БОТА
-# =========================
+logging.basicConfig(level=logging.INFO)
 
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
-
 dp = Dispatcher(storage=MemoryStorage())
 
-# Функция проверки админа
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-
-# =========================
-# STATES
-# =========================
-
+# ---------------------- СОСТОЯНИЯ ----------------------
 class OrderState(StatesGroup):
-    choosing_product = State()
-    choosing_size = State()
+    selecting_size = State()
     choosing_delivery = State()
+    waiting_phone = State()
     waiting_fio = State()
     waiting_address = State()
-    waiting_phone = State()
 
 class AdminState(StatesGroup):
     waiting_product_name = State()
     waiting_product_photo = State()
+    waiting_more_photos = State()
     waiting_size_product = State()
     waiting_size_value = State()
     waiting_size_price = State()
-    confirm_delete = State()
+    waiting_delete_product = State()
     waiting_delete_size_product = State()
     waiting_delete_size_value = State()
 
+# ---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
-# =========================
-# START
-# =========================
-
-@dp.message(CommandStart())
-@handle_errors
-async def start_handler(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    
-    logger.info(f"Пользователь {user_id} запустил бота")
-    
-    if is_admin(user_id):
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="➕ Добавить товар")],
-                [KeyboardButton(text="📏 Добавить размер"), KeyboardButton(text="🗑️ Удалить размер")],
-                [KeyboardButton(text="🗑️ Удалить товар")],
-                [KeyboardButton(text="📦 Все товары")],
-                [KeyboardButton(text="📊 Статистика")],
-                [KeyboardButton(text="👤 Режим покупателя")]
-            ],
-            resize_keyboard=True
-        )
-        await message.answer(
-            "🔧 **АДМИН ПАНЕЛЬ**\n\n"
-            "Выберите действие:\n\n"
-            f"📊 Всего заказов: {get_orders_count()}",
-            reply_markup=keyboard
-        )
-    else:
-        await show_products(message, state)
-
-
-# =========================
-# СТАТИСТИКА ДЛЯ АДМИНА
-# =========================
-
-@dp.message(F.text == "📊 Статистика")
-@handle_errors
-async def admin_stats_menu(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
+async def show_admin_panel(message: Message):
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📈 Общая статистика")],
-            [KeyboardButton(text="🏆 Топ товаров")],
-            [KeyboardButton(text="👟 Топ размеров")],
-            [KeyboardButton(text="📅 За месяц"), KeyboardButton(text="📆 За всё время")],
-            [KeyboardButton(text="🔙 Назад в админку")]
+            [KeyboardButton(text="➕ Добавить товар")],
+            [KeyboardButton(text="📏 Добавить размер")],
+            [KeyboardButton(text="🗑️ Удалить товар")],
+            [KeyboardButton(text="❌ Удалить размер")],
+            [KeyboardButton(text="📦 Все товары")],
+            [KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="👤 Режим покупателя")],
         ],
-        resize_keyboard=True
-    )
-    
-    await message.answer(
-        "📊 **СТАТИСТИКА БОТА**\n\n"
-        "Выберите, что хотите посмотреть:",
-        reply_markup=keyboard
-    )
-
-
-@dp.message(F.text == "📈 Общая статистика")
-@handle_errors
-async def admin_stats_total(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
-    # Статистика за всё время
-    all_time = get_sales_by_period(days=3650)  # ~10 лет
-    
-    if all_time:
-        text = (
-            f"📊 **ОБЩАЯ СТАТИСТИКА**\n\n"
-            f"📦 Всего заказов: **{all_time['total_orders']}**\n"
-            f"💰 Общая выручка: **{all_time['total_revenue']} BYN**\n"
-            f"📊 Средний чек: **{all_time['avg_order_value']} BYN**\n"
-            f"👥 Уникальных клиентов: **{all_time['unique_customers']}**\n"
-        )
-    else:
-        text = "📊 Пока нет заказов для статистики."
-    
-    await message.answer(text)
-
-
-@dp.message(F.text == "🏆 Топ товаров")
-@handle_errors
-async def admin_stats_top_products(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
-    top_products = get_top_products(limit=10)
-    
-    if not top_products:
-        await message.answer("🏆 Пока нет продаж для составления топа.")
-        return
-    
-    text = "🏆 **САМЫЕ ПРОДАВАЕМЫЕ ТОВАРЫ**\n\n"
-    
-    medals = ["🥇", "🥈", "🥉"]
-    for i, product in enumerate(top_products):
-        medal = medals[i] if i < 3 else f"{i+1}."
-        text += (
-            f"{medal} **{product['name']}**\n"
-            f"   📦 Продано: {product['orders_count']} шт.\n"
-            f"   💰 Выручка: {product['total_revenue']} BYN\n"
-            f"   📊 Средняя цена: {product['avg_price']} BYN\n\n"
-        )
-    
-    # Разбиваем длинные сообщения
-    if len(text) > 4000:
-        await message.answer(text[:4000])
-        await message.answer(text[4000:8000])
-    else:
-        await message.answer(text)
-
-
-@dp.message(F.text == "👟 Топ размеров")
-@handle_errors
-async def admin_stats_top_sizes(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
-    top_sizes = get_top_sizes(limit=10)
-    
-    if not top_sizes:
-        await message.answer("👟 Пока нет продаж для составления топа размеров.")
-        return
-    
-    text = "👟 **САМЫЕ ХОДОВЫЕ РАЗМЕРЫ**\n\n"
-    
-    medals = ["🥇", "🥈", "🥉"]
-    for i, size_data in enumerate(top_sizes):
-        medal = medals[i] if i < 3 else f"{i+1}."
-        
-        # Показываем популярные модели для этого размера
-        products_text = ""
-        if size_data['products']:
-            products_text = f"   👟 Популярен у: {', '.join(size_data['products'][:2])}"
-            if len(size_data['products']) > 2:
-                products_text += f" и ещё {len(size_data['products']) - 2}"
-        
-        text += (
-            f"{medal} **Размер {size_data['size']}**\n"
-            f"   📦 Продано: {size_data['orders_count']} пар\n"
-            f"   💰 Выручка: {size_data['total_revenue']} BYN\n"
-            f"{products_text}\n\n"
-        )
-    
-    if len(text) > 4000:
-        await message.answer(text[:4000])
-    else:
-        await message.answer(text)
-
-
-@dp.message(F.text == "📅 За месяц")
-@handle_errors
-async def admin_stats_month(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
-    monthly = get_sales_by_period(days=30)
-    
-    if monthly and monthly['total_orders'] > 0:
-        text = (
-            f"📅 **СТАТИСТИКА ЗА ПОСЛЕДНИЙ МЕСЯЦ**\n\n"
-            f"📦 Заказов: **{monthly['total_orders']}**\n"
-            f"💰 Выручка: **{monthly['total_revenue']} BYN**\n"
-            f"📊 Средний чек: **{monthly['avg_order_value']} BYN**\n"
-            f"👥 Клиентов: **{monthly['unique_customers']}**\n"
-        )
-        
-        # Товары месяца
-        top_monthly = get_top_products(limit=3, days=30)
-        if top_monthly:
-            text += "\n🏆 **Товары месяца:**\n"
-            for i, p in enumerate(top_monthly[:3], 1):
-                text += f"   {i}. {p['name']} — {p['orders_count']} шт.\n"
-    else:
-        text = "📅 За последний месяц заказов не было."
-    
-    await message.answer(text)
-
-
-@dp.message(F.text == "📆 За всё время")
-@handle_errors
-async def admin_stats_all_time(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    await admin_stats_total(message)  # Просто вызываем общую статистику
-
-
-@dp.message(F.text == "🔙 Назад в админку")
-@handle_errors
-async def admin_back_to_panel(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    await show_admin_panel(message)
-
-
-# =========================
-# БЭКАП ДЛЯ АДМИНА
-# =========================
-
-@dp.message(Command("backup"))
-@handle_errors
-async def admin_backup(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
-    await message.answer("📀 Создаю резервную копию базы данных...")
-    
-    backup_path = backup_db()
-    
-    if backup_path:
-        await message.answer(f"✅ Бэкап создан: `{backup_path}`", parse_mode="Markdown")
-    else:
-        await message.answer("❌ Не удалось создать бэкап. Проверьте логи.")
-
-
-# =========================
-# ПОКАЗ ТОВАРОВ (для покупателя)
-# =========================
-
-async def show_products(message: Message, state: FSMContext):
-    """Показать список товаров"""
-    try:
-        products = get_product_with_sizes_and_prices()
-        
-        if not products:
-            await message.answer("⚠️ Сейчас нет доступных товаров. Попробуйте позже.")
-            return
-        
-        keyboard_buttons = []
-        for product in products.keys():
-            keyboard_buttons.append([KeyboardButton(text=product)])
-        
-        keyboard_buttons.append([KeyboardButton(text="🔙 Отменить заказ")])
-        
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=keyboard_buttons,
-            resize_keyboard=True,
-            one_time_keyboard=False
-        )
-        
-        await state.set_state(OrderState.choosing_product)
-        
-        await message.answer(
-            "⚽ Добро пожаловать в 365football\n\nВыберите модель бутс:",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Ошибка в show_products: {e}")
-        await message.answer("❌ Ошибка загрузки товаров. Попробуйте позже.")
-
-
-# =========================
-# PRODUCT (для покупателя)
-# =========================
-
-@dp.message(OrderState.choosing_product)
-@handle_errors
-async def product_handler(message: Message, state: FSMContext):
-    if message.text == "🔙 Отменить заказ":
-        await state.clear()
-        await message.answer(
-            "🗑️ Заказ отменён. Нажмите /start, чтобы начать заново.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return
-    
-    product = message.text
-    products = get_product_with_sizes_and_prices()
-    
-    if product not in products:
-        await message.answer("❌ Выберите модель из списка.")
-        return
-    
-    await state.update_data(product=product)
-    sizes_data = products[product]
-    
-    if not sizes_data:
-        await message.answer("⚠️ Для этого товара пока нет размеров.")
-        await state.clear()
-        return
-    
-    # Проверяем и обновляем фото при необходимости
-    photo_file_id = get_product_with_photo(product)
-    
-    keyboard_buttons = []
-    for size, price in sizes_data.items():
-        button_text = f"{size} | {price} BYN"
-        keyboard_buttons.append([KeyboardButton(text=button_text)])
-    
-    keyboard_buttons.append([KeyboardButton(text="🔙 Назад к товарам")])
-    
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=keyboard_buttons,
         resize_keyboard=True,
-        one_time_keyboard=False
     )
-    
-    await state.set_state(OrderState.choosing_size)
-    
-    try:
-        if photo_file_id:
-            await message.answer_photo(
-                photo=photo_file_id,
-                caption=f"📦 **{product}**\n\nВыберите размер и цену:",
-                reply_markup=keyboard
-            )
-        else:
-            await message.answer(
-                f"📦 **{product}**\n\nВыберите размер и цену:",
-                reply_markup=keyboard
-            )
-    except Exception as e:
-        logger.error(f"Ошибка при отправке фото для {product}: {e}")
-        await message.answer(
-            f"📦 **{product}**\n\nВыберите размер и цену:",
-            reply_markup=keyboard
-        )
-
-
-# =========================
-# SIZE (для покупателя)
-# =========================
-
-@dp.message(OrderState.choosing_size)
-@handle_errors
-async def size_handler(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад к товарам":
-        await show_products(message, state)
-        return
-    
-    parts = message.text.split(" | ")
-    if len(parts) != 2:
-        await message.answer("❌ Пожалуйста, выберите размер из кнопок ниже.")
-        return
-    
-    size = parts[0]
-    price = parts[1].replace(" BYN", "")
-    
-    # Проверяем, что цена - число
-    try:
-        price_int = int(price)
-    except ValueError:
-        await message.answer("❌ Ошибка: некорректная цена. Пожалуйста, выберите размер заново.")
-        return
-    
-    await state.update_data(size=size, price=price_int)
-
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🚚 Доставка")],
-            [KeyboardButton(text="🏪 Самовывоз в Минске")],
-            [KeyboardButton(text="🔙 Назад к размерам")]
-        ],
-        resize_keyboard=True
-    )
-
-    await state.set_state(OrderState.choosing_delivery)
-
     await message.answer(
-        f"💰 Сумма заказа: **{price_int} BYN**\n\nВыберите способ получения:",
-        reply_markup=keyboard
+        "<b>🔧 АДМИН ПАНЕЛЬ</b>\n\nВыберите действие:",
+        reply_markup=keyboard,
     )
 
+async def send_product_card(chat_id, product_index):
+    """Отправляет альбом фото и отдельное сообщение с кнопками."""
+    product_name, sizes, photos = get_product_by_index(product_index)
+    if not product_name:
+        return None
+    total = get_products_count()
+    text = f"<b>{product_name}</b>\n\n"
+    if sizes:
+        for size, price in sizes.items():
+            text += f"• {size} — {price} BYN\n"
+    else:
+        text += "Нет доступных размеров\n"
+    text += f"\nТовар {product_index + 1} из {total}"
 
-# =========================
-# DELIVERY (для покупателя)
-# =========================
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="◀️ Назад", callback_data=f"prev_{product_index}"),
+            InlineKeyboardButton(text="✅ Оформить заказ", callback_data=f"order_{product_name}"),
+            InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"next_{product_index}")
+        ]
+    ])
 
-@dp.message(OrderState.choosing_delivery)
-@handle_errors
-async def delivery_handler(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад к размерам":
+    # Отправляем альбом фото (без подписи)
+    if photos:
+        media_group = MediaGroupBuilder()
+        for photo_id in photos:
+            media_group.add_photo(media=photo_id)
+        await bot.send_media_group(chat_id, media=media_group.build())
+    # Отправляем отдельное сообщение с текстом и кнопками
+    msg = await bot.send_message(chat_id, text, reply_markup=keyboard)
+    return msg.message_id
+
+# ---------------------- ПОКУПАТЕЛЬ: СТАРТ И КАТАЛОГ ----------------------
+@dp.message(CommandStart())
+async def start_handler(message: Message, state: FSMContext):
+    await state.clear()
+    if is_admin(message.from_user.id):
+        await show_admin_panel(message)
+    else:
+        await message.answer("Загрузка каталога...", reply_markup=ReplyKeyboardRemove())
+        if get_products_count() == 0:
+            await message.answer("⚠️ Каталог пуст. Зайдите позже.")
+            return
+        msg_id = await send_product_card(message.chat.id, 0)
+        if msg_id:
+            await state.update_data(catalog_message_id=msg_id, current_index=0)
+
+@dp.callback_query(F.data.startswith("prev_"))
+async def prev_product(callback: CallbackQuery, state: FSMContext):
+    _, current = callback.data.split("_")
+    current = int(current)
+    if current > 0:
+        new_index = current - 1
+        # Удаляем старое сообщение с кнопками (альбом не удаляем, чтобы не было ошибок)
         data = await state.get_data()
-        product = data.get("product")
-        
-        products = get_product_with_sizes_and_prices()
-        sizes_data = products.get(product, {})
-        
-        if sizes_data:
-            keyboard_buttons = []
-            for size, price in sizes_data.items():
-                button_text = f"{size} | {price} BYN"
-                keyboard_buttons.append([KeyboardButton(text=button_text)])
-            
-            keyboard_buttons.append([KeyboardButton(text="🔙 Назад к товарам")])
-            
-            keyboard = ReplyKeyboardMarkup(
-                keyboard=keyboard_buttons,
-                resize_keyboard=True,
-                one_time_keyboard=False
-            )
-            
-            await state.set_state(OrderState.choosing_size)
-            
-            photo_file_id = get_product_with_photo(product)
-            if photo_file_id:
-                try:
-                    await message.answer_photo(
-                        photo=photo_file_id,
-                        caption=f"📦 **{product}**\n\nВыберите размер и цену:",
-                        reply_markup=keyboard
-                    )
-                except:
-                    await message.answer(
-                        f"📦 **{product}**\n\nВыберите размер и цену:",
-                        reply_markup=keyboard
-                    )
-            else:
-                await message.answer(
-                    f"📦 **{product}**\n\nВыберите размер и цену:",
-                    reply_markup=keyboard
-                )
-        return
-    
-    delivery = message.text
-    
-    if delivery not in ["🚚 Доставка", "🏪 Самовывоз в Минске"]:
-        await message.answer("❌ Пожалуйста, выберите способ получения из кнопок ниже.")
-        return
+        old_msg_id = data.get("catalog_message_id")
+        if old_msg_id:
+            try:
+                await bot.delete_message(callback.message.chat.id, old_msg_id)
+            except Exception as e:
+                logging.warning(f"Не удалось удалить сообщение: {e}")
+        # Отправляем новый товар
+        msg_id = await send_product_card(callback.message.chat.id, new_index)
+        if msg_id:
+            await state.update_data(catalog_message_id=msg_id, current_index=new_index)
+    await callback.answer()
 
-    await state.update_data(delivery=delivery)
+@dp.callback_query(F.data.startswith("next_"))
+async def next_product(callback: CallbackQuery, state: FSMContext):
+    _, current = callback.data.split("_")
+    current = int(current)
+    total = get_products_count()
+    if current + 1 < total:
+        new_index = current + 1
+        data = await state.get_data()
+        old_msg_id = data.get("catalog_message_id")
+        if old_msg_id:
+            try:
+                await bot.delete_message(callback.message.chat.id, old_msg_id)
+            except Exception as e:
+                logging.warning(f"Не удалось удалить сообщение: {e}")
+        msg_id = await send_product_card(callback.message.chat.id, new_index)
+        if msg_id:
+            await state.update_data(catalog_message_id=msg_id, current_index=new_index)
+    else:
+        await callback.answer("Это последний товар")
+    await callback.answer()
 
-    if delivery == "🚚 Доставка":
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="🔙 Назад к способам доставки")]],
-            resize_keyboard=True
-        )
-        await state.set_state(OrderState.waiting_fio)
-        await message.answer("📝 Введите ФИО:", reply_markup=keyboard)
+# ---------------------- ОФОРМЛЕНИЕ ЗАКАЗА (ВЫБОР РАЗМЕРА) ----------------------
+@dp.callback_query(F.data.startswith("order_"))
+async def order_start(callback: CallbackQuery, state: FSMContext):
+    # Удаляем сообщение с кнопками (альбом остаётся)
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logging.warning(f"Не удалось удалить сообщение: {e}")
+    product_name = callback.data.split("_", 1)[1]
+    sizes = get_product_with_sizes_and_prices().get(product_name, {})
+    if not sizes:
+        await callback.answer("Нет доступных размеров", show_alert=True)
+        # Возвращаем каталог (новое сообщение с кнопками для текущего товара)
+        current_index = (await state.get_data()).get("current_index", 0)
+        msg_id = await send_product_card(callback.message.chat.id, current_index)
+        if msg_id:
+            await state.update_data(catalog_message_id=msg_id, current_index=current_index)
         return
+    await state.update_data(product=product_name)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{size} ({price} BYN)", callback_data=f"size_{product_name}_{size}_{price}")]
+        for size, price in sizes.items()
+    ] + [[InlineKeyboardButton(text="🔙 Назад в каталог", callback_data="back_to_catalog")]])
+    msg = await callback.message.answer(f"Выберите размер для <b>{product_name}</b>:", reply_markup=keyboard)
+    await state.update_data(order_message_id=msg.message_id)
+    await state.set_state(OrderState.selecting_size)
+    await callback.answer()
 
+# ---------------------- ВЫБОР РАЗМЕРА ----------------------
+@dp.callback_query(OrderState.selecting_size, F.data.startswith("size_"))
+async def select_size(callback: CallbackQuery, state: FSMContext):
+    _, product_name, size, price = callback.data.split("_")
+    await state.update_data(size=size, price=int(price))
     data = await state.get_data()
-    await send_order(message, state, data)
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(callback.message.chat.id, order_msg_id)
+        except:
+            pass
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚚 Доставка", callback_data="delivery_delivery")],
+        [InlineKeyboardButton(text="🏪 Самовывоз", callback_data="delivery_pickup")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_sizes")]
+    ])
+    msg = await callback.message.answer(f"Вы выбрали <b>{product_name}</b>, размер {size}, цена {price} BYN.\n\nВыберите способ получения:", reply_markup=keyboard)
+    await state.update_data(order_message_id=msg.message_id)
+    await state.set_state(OrderState.choosing_delivery)
+    await callback.answer()
 
-
-# =========================
-# FIO, ADDRESS, PHONE
-# =========================
-
-@dp.message(OrderState.waiting_fio)
-@handle_errors
-async def fio_handler(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад к способам доставки":
-        data = await state.get_data()
-        price = data.get("price", "0")
-        
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="🚚 Доставка")],
-                [KeyboardButton(text="🏪 Самовывоз в Минске")],
-                [KeyboardButton(text="🔙 Назад к размерам")]
-            ],
-            resize_keyboard=True
-        )
-        
-        await state.set_state(OrderState.choosing_delivery)
-        await message.answer(
-            f"💰 Сумма заказа: **{price} BYN**\n\nВыберите способ получения:",
-            reply_markup=keyboard
-        )
-        return
-    
-    fio = message.text.strip()
-    if len(fio) < 3:
-        await message.answer("⚠️ Введите корректное ФИО (минимум 3 символа):")
-        return
-    
-    if len(fio) > 200:
-        await message.answer("⚠️ ФИО слишком длинное (максимум 200 символов):")
-        return
-    
-    await state.update_data(fio=fio)
-    await state.set_state(OrderState.waiting_address)
-    
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="🔙 Назад к ФИО")]],
-        resize_keyboard=True
-    )
-    await message.answer("🏠 Введите адрес Европочты:", reply_markup=keyboard)
-
-
-@dp.message(OrderState.waiting_address)
-@handle_errors
-async def address_handler(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад к ФИО":
-        await state.set_state(OrderState.waiting_fio)
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="🔙 Назад к способам доставки")]],
-            resize_keyboard=True
-        )
-        await message.answer("📝 Введите ФИО:", reply_markup=keyboard)
-        return
-    
-    address = message.text.strip()
-    if len(address) < 5:
-        await message.answer("⚠️ Введите корректный адрес (минимум 5 символов):")
-        return
-    
-    if len(address) > 500:
-        await message.answer("⚠️ Адрес слишком длинный (максимум 500 символов):")
-        return
-    
-    await state.update_data(address=address)
+# ---------------------- СПОСОБ ДОСТАВКИ ----------------------
+@dp.callback_query(OrderState.choosing_delivery, F.data.startswith("delivery_"))
+async def delivery_method(callback: CallbackQuery, state: FSMContext):
+    method = callback.data.split("_")[1]
+    delivery = "🚚 Доставка" if method == "delivery" else "🏪 Самовывоз"
+    await state.update_data(delivery=delivery)
+    data = await state.get_data()
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(callback.message.chat.id, order_msg_id)
+        except:
+            pass
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_delivery")]
+    ])
+    msg = await callback.message.answer("📞 Отправьте ваш номер телефона (или введите вручную):\nОн нужен для связи.", reply_markup=keyboard)
+    await state.update_data(order_message_id=msg.message_id)
     await state.set_state(OrderState.waiting_phone)
-    
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="🔙 Назад к адресу")]],
-        resize_keyboard=True
-    )
-    await message.answer("📞 Введите номер телефона:", reply_markup=keyboard)
-
+    await callback.answer()
 
 @dp.message(OrderState.waiting_phone)
-@handle_errors
-async def phone_handler(message: Message, state: FSMContext):
-    if message.text == "🔙 Назад к адресу":
-        await state.set_state(OrderState.waiting_address)
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="🔙 Назад к ФИО")]],
-            resize_keyboard=True
-        )
-        await message.answer("🏠 Введите адрес Европочты:", reply_markup=keyboard)
-        return
-    
+async def phone_input(message: Message, state: FSMContext):
     phone = message.text.strip()
-    
-    # Валидация телефона
-    cleaned = phone.replace("+", "").replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
-    if not cleaned.isdigit() or len(cleaned) < 9 or len(cleaned) > 15:
-        await message.answer("⚠️ Введите корректный номер телефона (например, +375291234567 или 80291234567):")
+    if not phone:
+        await message.answer("❌ Введите номер телефона.")
         return
-
     await state.update_data(phone=phone)
+    data = await state.get_data()
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(message.chat.id, order_msg_id)
+        except:
+            pass
+    if data.get("delivery") == "🚚 Доставка":
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_phone")]
+        ])
+        msg = await message.answer("📝 Введите ваше ФИО:", reply_markup=keyboard)
+        await state.update_data(order_message_id=msg.message_id)
+        await state.set_state(OrderState.waiting_fio)
+    else:
+        await state.update_data(fio="Не указано", address="Самовывоз")
+        await send_order(message, state, data)
+
+@dp.message(OrderState.waiting_fio)
+async def fio_input(message: Message, state: FSMContext):
+    await state.update_data(fio=message.text.strip())
+    data = await state.get_data()
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(message.chat.id, order_msg_id)
+        except:
+            pass
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_fio")]
+    ])
+    msg = await message.answer("🏠 Введите адрес отделения Европочты в вашем городе (с указанием города):", reply_markup=keyboard)
+    await state.update_data(order_message_id=msg.message_id)
+    await state.set_state(OrderState.waiting_address)
+
+@dp.message(OrderState.waiting_address)
+async def address_input(message: Message, state: FSMContext):
+    await state.update_data(address=message.text.strip())
     data = await state.get_data()
     await send_order(message, state, data)
 
+# ---------------------- ОБРАБОТКА "НАЗАД" В ЗАКАЗЕ ----------------------
+@dp.callback_query(F.data == "back_to_catalog")
+async def back_to_catalog(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except:
+        pass
+    # Возвращаем текущий товар с индекса 0
+    msg_id = await send_product_card(callback.message.chat.id, 0)
+    if msg_id:
+        await state.update_data(catalog_message_id=msg_id, current_index=0)
+    await callback.answer()
 
-# =========================
-# SEND ORDER
-# =========================
+@dp.callback_query(F.data == "back_to_sizes")
+async def back_to_sizes(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    product_name = data.get("product")
+    sizes = get_product_with_sizes_and_prices().get(product_name, {})
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(callback.message.chat.id, order_msg_id)
+        except:
+            pass
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{size} ({price} BYN)", callback_data=f"size_{product_name}_{size}_{price}")]
+        for size, price in sizes.items()
+    ] + [[InlineKeyboardButton(text="🔙 Назад в каталог", callback_data="back_to_catalog")]])
+    msg = await callback.message.answer(f"Выберите размер для <b>{product_name}</b>:", reply_markup=keyboard)
+    await state.update_data(order_message_id=msg.message_id)
+    await state.set_state(OrderState.selecting_size)
+    await callback.answer()
 
-async def send_order(message: Message, state: FSMContext, data: dict):
-    product = data.get("product")
+@dp.callback_query(F.data == "back_to_delivery")
+async def back_to_delivery(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    product_name = data.get("product")
     size = data.get("size")
     price = data.get("price")
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(callback.message.chat.id, order_msg_id)
+        except:
+            pass
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚚 Доставка", callback_data="delivery_delivery")],
+        [InlineKeyboardButton(text="🏪 Самовывоз", callback_data="delivery_pickup")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_sizes")]
+    ])
+    msg = await callback.message.answer(f"Вы выбрали <b>{product_name}</b>, размер {size}, цена {price} BYN.\n\nВыберите способ получения:", reply_markup=keyboard)
+    await state.update_data(order_message_id=msg.message_id)
+    await state.set_state(OrderState.choosing_delivery)
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_to_phone")
+async def back_to_phone(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
     delivery = data.get("delivery")
-    fio = data.get("fio", "-")
-    address = data.get("address", "-")
-    phone = data.get("phone", "-")
-
-    username = message.from_user.username
-    user_id = message.from_user.id
-    full_name = message.from_user.full_name
-
-    user_link = f"@{username}" if username else "Нет username"
-    
-    # Сохраняем заказ в БД
-    order_data = {
-        'user_id': user_id,
-        'user_name': full_name,
-        'username': username,
-        'product': product,
-        'size': size,
-        'price': price,
-        'delivery': delivery,
-        'fio': fio if delivery == "🚚 Доставка" else "-",
-        'address': address if delivery == "🚚 Доставка" else "-",
-        'phone': phone if delivery == "🚚 Доставка" else "-"
-    }
-    
-    order_id = save_order(order_data)
-    
-    text = (
-        f"🛒 НОВЫЙ ЗАКАЗ #{order_id if order_id else '?'}\n\n"
-        f"👟 Модель: {product}\n"
-        f"📏 Размер: {size}\n"
-        f"💰 Цена: {price} BYN\n"
-        f"🚚 Способ: {delivery}\n\n"
-        f"👤 Клиент: {full_name}\n"
-        f"📱 Username: {user_link}\n"
-        f"🆔 ID: {user_id}\n\n"
-    )
-
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(callback.message.chat.id, order_msg_id)
+        except:
+            pass
     if delivery == "🚚 Доставка":
-        text += (
-            f"📦 ФИО: {fio}\n"
-            f"🏠 Адрес Европочты: {address}\n"
-            f"📞 Телефон: {phone}\n"
-        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_delivery")]
+        ])
+        msg = await callback.message.answer("📞 Отправьте ваш номер телефона (или введите вручную):\nОн нужен для связи.", reply_markup=keyboard)
+        await state.update_data(order_message_id=msg.message_id)
+        await state.set_state(OrderState.waiting_phone)
+    else:
+        await back_to_delivery(callback, state)
+    await callback.answer()
 
-    photo = get_product_with_photo(product)
-    
-    # Отправляем всем админам
+@dp.callback_query(F.data == "back_to_fio")
+async def back_to_fio(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(callback.message.chat.id, order_msg_id)
+        except:
+            pass
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_phone")]
+    ])
+    msg = await callback.message.answer("📝 Введите ваше ФИО:", reply_markup=keyboard)
+    await state.update_data(order_message_id=msg.message_id)
+    await state.set_state(OrderState.waiting_fio)
+    await callback.answer()
+
+# ---------------------- ОТПРАВКА ЗАКАЗА АДМИНАМ ----------------------
+async def send_order(message: Message, state: FSMContext, data: dict):
+    # Удаляем последнее сообщение с вопросом (ФИО или адрес)
+    order_msg_id = data.get("order_message_id")
+    if order_msg_id:
+        try:
+            await bot.delete_message(message.chat.id, order_msg_id)
+        except:
+            pass
+
+    user = message.from_user
+    username = f"@{user.username}" if user.username else "Нет username"
+    profile_link = f"tg://user?id={user.id}"
+
+    order_data = {
+        'product': data.get('product'),
+        'size': data.get('size'),
+        'price': int(data.get('price')),
+        'delivery': data.get('delivery'),
+        'fio': data.get('fio'),
+        'phone': data.get('phone'),
+        'address': data.get('address'),
+        'username': username,
+        'user_id': user.id
+    }
+    save_order(order_data)
+
+    text = (
+        f"🛒 <b>НОВЫЙ ЗАКАЗ</b>\n\n"
+        f"👟 Товар: {data.get('product')}\n"
+        f"📏 Размер: {data.get('size')}\n"
+        f"💰 Цена: {data.get('price')} BYN\n"
+        f"🚚 Получение: {data.get('delivery')}\n\n"
+        f"👤 Клиент: {user.full_name}\n"
+        f"🆔 ID: <code>{user.id}</code>\n"
+        f"📱 Username: {username}\n"
+        f"🔗 Ссылка: <a href='{profile_link}'>Написать</a>\n"
+        f"📞 Телефон: {data.get('phone')}\n"
+    )
+    if data.get("delivery") == "🚚 Доставка":
+        text += f"\n📦 ФИО: {data.get('fio')}\n🏠 Адрес: {data.get('address')}"
+
+    photos = get_product_photos(data.get("product"))
+    photo = photos[0] if photos else None
     for admin_id in ADMIN_IDS:
         try:
             if photo:
@@ -696,369 +438,358 @@ async def send_order(message: Message, state: FSMContext, data: dict):
             else:
                 await bot.send_message(admin_id, text)
         except Exception as e:
-            logger.error(f"Не удалось отправить заказ админу {admin_id}: {e}")
-    
-    await message.answer(
-        f"✅ Заказ #{order_id if order_id else '?'} на сумму **{price} BYN** отправлен!\n"
-        f"С вами свяжутся в ближайшее время! ✅\n\n"
-        f"Нажмите /start для нового заказа",
-        reply_markup=ReplyKeyboardRemove()
-    )
+            logging.error(e)
 
+    await message.answer("✅ Заказ отправлен! С вами свяжутся.", reply_markup=ReplyKeyboardRemove())
     await state.clear()
-    
-    logger.info(f"Заказ #{order_id} от пользователя {user_id} успешно создан")
+    # Возвращаем покупателя в каталог (первый товар)
+    msg_id = await send_product_card(message.chat.id, 0)
+    if msg_id:
+        await state.update_data(catalog_message_id=msg_id, current_index=0)
 
+# ---------------------- АДМИНСКИЕ ФУНКЦИИ (рабочие) ----------------------
+admin_nav_keyboard = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="◀️ Назад")], [KeyboardButton(text="❌ Выход")]],
+    resize_keyboard=True
+)
 
-# =========================
-# CANCEL
-# =========================
+def get_products_keyboard(products):
+    buttons = [[KeyboardButton(text=p)] for p in products]
+    buttons.append([KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Выход")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-@dp.message(Command("cancel"))
-@handle_errors
-async def cancel_handler(message: Message, state: FSMContext):
-    current = await state.get_state()
-    if current is None:
-        await message.answer("У вас нет активного заказа.")
-    else:
-        await state.clear()
-        await message.answer(
-            "🗑️ Заказ отменён. Нажмите /start, чтобы начать заново.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-
-
-# =========================
-# АДМИН-ХЕНДЛЕРЫ
-# =========================
-
-@dp.message(F.text == "🗑️ Удалить размер")
-@handle_errors
-async def admin_delete_size_btn(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): 
-        return
-    
-    products = get_all_products()
-    if not products:
-        return await message.answer("⚠️ Нет товаров с размерами.")
-    
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=p)] for p in products],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    await state.set_state(AdminState.waiting_delete_size_product)
-    await message.answer("🗑️ Выберите товар, у которого нужно удалить размер:", reply_markup=keyboard)
-
-
-@dp.message(StateFilter(AdminState.waiting_delete_size_product), F.text)
-@handle_errors
-async def admin_select_size_to_delete(message: Message, state: FSMContext):
-    product = message.text
-    products = get_product_with_sizes_and_prices()
-    
-    if product not in products:
-        await message.answer("❌ Выберите товар из списка.")
-        return
-    
-    sizes_data = products[product]
-    if not sizes_data:
-        await message.answer(f"⚠️ У товара **{product}** нет размеров для удаления.")
-        await state.clear()
-        await show_admin_panel(message)
-        return
-    
-    await state.update_data(delete_product=product)
-    
-    keyboard_buttons = []
-    for size, price in sizes_data.items():
-        keyboard_buttons.append([KeyboardButton(text=f"{size} ({price} BYN)")])
-    
-    keyboard_buttons.append([KeyboardButton(text="🔙 Отмена")])
-    
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=keyboard_buttons,
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    
-    await state.set_state(AdminState.waiting_delete_size_value)
-    await message.answer(
-        f"🗑️ Удаление размера у **{product}**\n\nВыберите размер для удаления:",
-        reply_markup=keyboard
-    )
-
-
-@dp.message(StateFilter(AdminState.waiting_delete_size_value), F.text)
-@handle_errors
-async def admin_confirm_delete_size(message: Message, state: FSMContext):
-    if message.text == "🔙 Отмена":
-        await state.clear()
-        await show_admin_panel(message)
-        return
-    
-    data = await state.get_data()
-    product = data.get("delete_product")
-    
-    size_text = message.text.split(" (")[0]
-    
-    if delete_size(product, size_text):
-        await message.answer(f"✅ Размер **{size_text}** удалён у товара **{product}**!")
-    else:
-        await message.answer(f"❌ Не удалось удалить размер **{size_text}**.")
-    
-    await state.clear()
-    await show_admin_panel(message)
-
+def get_sizes_keyboard(sizes):
+    buttons = [[KeyboardButton(text=s)] for s in sizes]
+    buttons.append([KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Выход")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 @dp.message(F.text == "➕ Добавить товар")
-@handle_errors
-async def admin_add_product_btn(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): 
+async def admin_add_product(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
         return
     await state.set_state(AdminState.waiting_product_name)
-    await message.answer("📝 Введите **название** товара (например, Nike Mercurial 2025):")
+    await message.answer("Введите название товара:", reply_markup=admin_nav_keyboard)
 
-
-@dp.message(StateFilter(AdminState.waiting_product_name), F.text)
-@handle_errors
-async def admin_waiting_photo(message: Message, state: FSMContext):
+@dp.message(AdminState.waiting_product_name)
+async def admin_product_name(message: Message, state: FSMContext):
+    if message.text == "❌ Выход":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    if message.text == "◀️ Назад":
+        await state.clear()
+        await show_admin_panel(message)
+        return
     await state.update_data(product_name=message.text.strip())
+    await state.update_data(photos=[])
     await state.set_state(AdminState.waiting_product_photo)
-    await message.answer("📸 Отправьте **фото** товара (можно как файл или как картинку):")
-
-
-@dp.message(StateFilter(AdminState.waiting_product_photo), F.photo)
-@handle_errors
-async def admin_save_product_with_photo(message: Message, state: FSMContext):
-    data = await state.get_data()
-    product_name = data.get("product_name")
-    
-    photo = message.photo[-1]
-    file_id = photo.file_id
-    
-    if add_product(product_name, file_id):
-        await message.answer(f"✅ Товар **{product_name}** успешно добавлен с фото!")
-    else:
-        await message.answer(f"⚠️ Товар **{product_name}** уже существует.")
-    
-    await state.clear()
-    await show_admin_panel(message)
-
-
-@dp.message(StateFilter(AdminState.waiting_product_photo))
-@handle_errors
-async def admin_photo_error(message: Message, state: FSMContext):
-    await message.answer("❌ Пожалуйста, отправьте **фото** (не файл и не текстовое сообщение):")
-
-
-@dp.message(F.text == "📏 Добавить размер")
-@handle_errors
-async def admin_add_size_btn(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): 
-        return
-    products = get_all_products()
-    if not products:
-        return await message.answer("⚠️ Сначала добавьте товары!")
-    
     keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=p)] for p in products],
-        resize_keyboard=True, 
-        one_time_keyboard=True
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить ещё")],
+            [KeyboardButton(text="✅ Готово")],
+            [KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Выход")]
+        ],
+        resize_keyboard=True
     )
-    await state.set_state(AdminState.waiting_size_product)
-    await message.answer("📦 Выберите товар, к которому добавить размер:", reply_markup=keyboard)
+    await message.answer("Отправьте фото товара (можно несколько). После каждого фото нажимайте '➕ Добавить ещё' или '✅ Готово':", reply_markup=keyboard)
 
-
-@dp.message(StateFilter(AdminState.waiting_size_product), F.text)
-@handle_errors
-async def admin_waiting_size_value(message: Message, state: FSMContext):
-    await state.update_data(admin_product=message.text)
-    await state.set_state(AdminState.waiting_size_value)
-    await message.answer("📏 Введите **размер** (например, 42):")
-
-
-@dp.message(StateFilter(AdminState.waiting_size_value), F.text)
-@handle_errors
-async def admin_waiting_price(message: Message, state: FSMContext):
-    await state.update_data(admin_size=message.text.strip())
-    await state.set_state(AdminState.waiting_size_price)
-    await message.answer("💰 Введите **цену** в BYN (например, 199):")
-
-
-@dp.message(StateFilter(AdminState.waiting_size_price), F.text)
-@handle_errors
-async def admin_save_size_with_price(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
+@dp.message(AdminState.waiting_product_photo, F.text.in_(["➕ Добавить ещё", "✅ Готово", "◀️ Назад", "❌ Выход"]))
+async def admin_product_photo_nav(message: Message, state: FSMContext):
+    if message.text == "❌ Выход":
         await state.clear()
+        await show_admin_panel(message)
         return
-    
-    data = await state.get_data()
-    product = data.get("admin_product")
-    size = data.get("admin_size")
-    price = message.text.strip()
-    
-    try:
-        price_int = int(price)
-        if price_int <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Введите корректное положительное число для цены (например, 199):")
+    if message.text == "◀️ Назад":
+        await state.set_state(AdminState.waiting_product_name)
+        await message.answer("Введите название товара:", reply_markup=admin_nav_keyboard)
         return
-    
-    if add_size(product, size, price_int):
-        await message.answer(f"✅ Размер **{size}** по цене **{price_int} BYN** добавлен для **{product}**!")
-    else:
-        await message.answer(f"⚠️ Такой размер уже есть или товар не найден.")
-    
-    await state.clear()
-    await show_admin_panel(message)
-
-
-@dp.message(F.text == "🗑️ Удалить товар")
-@handle_errors
-async def admin_delete_btn(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): 
-        return
-    products = get_all_products()
-    if not products:
-        return await message.answer("⚠️ Нечего удалять.")
-        
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=p)] for p in products],
-        resize_keyboard=True, 
-        one_time_keyboard=True
-    )
-    await state.set_state(AdminState.confirm_delete)
-    await message.answer("⚠️ Выберите товар для удаления:", reply_markup=keyboard)
-
-
-@dp.message(StateFilter(AdminState.confirm_delete), F.text)
-@handle_errors
-async def admin_do_delete(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await state.clear()
-        return
-    
-    product = message.text
-    if delete_product(product):
-        await message.answer(f"🗑️ Товар **{product}** удалён.")
-    else:
-        await message.answer("❌ Ошибка при удалении.")
-    
-    await state.clear()
-    await show_admin_panel(message)
-
-
-@dp.message(F.text == "📦 Все товары")
-@handle_errors
-async def admin_list_products(message: Message):
-    if not is_admin(message.from_user.id): 
-        return
-    
-    products = get_product_with_sizes_and_prices()
-    
-    if not products:
-        return await message.answer("📦 Список пуст.")
-    
-    for name, sizes in products.items():
-        if sizes:
-            sizes_text = "\n".join([f"  • {size} — {price} BYN" for size, price in sizes.items()])
-            text = f"👟 **{name}**\n\n{sizes_text}"
+    if message.text == "✅ Готово":
+        data = await state.get_data()
+        photos = data.get("photos", [])
+        if not photos:
+            await message.answer("❌ Вы не отправили ни одного фото. Отправьте хотя бы одно.")
+            return
+        success = add_product(data["product_name"], photos)
+        if success:
+            await message.answer("✅ Товар добавлен")
         else:
-            text = f"👟 **{name}**\n\nНет размеров"
-        
-        photo = get_product_with_photo(name)
-        if photo:
-            try:
-                await message.answer_photo(photo=photo, caption=text)
-            except:
-                await message.answer(text)
+            await message.answer("❌ Такой товар уже существует")
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    # "➕ Добавить ещё" — просто ждём следующее фото
+
+@dp.message(AdminState.waiting_product_photo, F.photo)
+async def admin_product_photo(message: Message, state: FSMContext):
+    file_id = message.photo[-1].file_id
+    data = await state.get_data()
+    photos = data.get("photos", [])
+    photos.append(file_id)
+    await state.update_data(photos=photos)
+    await message.answer(f"✅ Фото {len(photos)} добавлено. Отправьте ещё или нажмите '✅ Готово'.")
+
+@dp.message(AdminState.waiting_product_photo)
+async def admin_product_photo_invalid(message: Message):
+    await message.answer("❌ Отправьте фото или используйте кнопки.")
+
+# ---------- Добавление размера ----------
+@dp.message(F.text == "📏 Добавить размер")
+async def admin_add_size(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    products = get_all_products()
+    if not products:
+        await message.answer("Сначала добавьте товар.")
+        return
+    await state.set_state(AdminState.waiting_size_product)
+    keyboard = get_products_keyboard(products)
+    await message.answer("Выберите товар:", reply_markup=keyboard)
+
+@dp.message(AdminState.waiting_size_product)
+async def admin_size_product(message: Message, state: FSMContext):
+    if message.text == "❌ Выход":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    if message.text == "◀️ Назад":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    product_name = message.text.strip()
+    if product_name not in get_all_products():
+        await message.answer("❌ Товар не найден. Выберите из списка.")
+        return
+    await state.update_data(product=product_name)
+    await state.set_state(AdminState.waiting_size_value)
+    await message.answer("Введите размер:", reply_markup=admin_nav_keyboard)
+
+@dp.message(AdminState.waiting_size_value, F.text.in_(["◀️ Назад", "❌ Выход"]))
+async def admin_size_value_nav(message: Message, state: FSMContext):
+    if message.text == "❌ Выход":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    if message.text == "◀️ Назад":
+        await state.set_state(AdminState.waiting_size_product)
+        products = get_all_products()
+        keyboard = get_products_keyboard(products)
+        await message.answer("Выберите товар:", reply_markup=keyboard)
+        return
+
+@dp.message(AdminState.waiting_size_value)
+async def admin_size_value(message: Message, state: FSMContext):
+    await state.update_data(size=message.text.strip())
+    await state.set_state(AdminState.waiting_size_price)
+    await message.answer("Введите цену (только число):", reply_markup=admin_nav_keyboard)
+
+@dp.message(AdminState.waiting_size_price, F.text.in_(["◀️ Назад", "❌ Выход"]))
+async def admin_size_price_nav(message: Message, state: FSMContext):
+    if message.text == "❌ Выход":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    if message.text == "◀️ Назад":
+        await state.set_state(AdminState.waiting_size_value)
+        await message.answer("Введите размер:", reply_markup=admin_nav_keyboard)
+        return
+
+@dp.message(AdminState.waiting_size_price)
+async def admin_size_price(message: Message, state: FSMContext):
+    data = await state.get_data()
+    try:
+        price = int(message.text)
+    except ValueError:
+        await message.answer("❌ Цена должна быть числом. Попробуйте снова.")
+        return
+    add_size(data["product"], data["size"], price)
+    await message.answer("✅ Размер добавлен")
+    await state.clear()
+    await show_admin_panel(message)
+
+# ---------- Удаление товара ----------
+@dp.message(F.text == "🗑️ Удалить товар")
+async def admin_delete_product_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    products = get_all_products()
+    if not products:
+        await message.answer("⚠️ Нет товаров для удаления.")
+        return
+    await state.set_state(AdminState.waiting_delete_product)
+    keyboard = get_products_keyboard(products)
+    await message.answer("Выберите товар для удаления:", reply_markup=keyboard)
+
+@dp.message(AdminState.waiting_delete_product, F.text.in_(["◀️ Назад", "❌ Выход"]))
+async def admin_delete_product_nav(message: Message, state: FSMContext):
+    if message.text == "❌ Выход":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    if message.text == "◀️ Назад":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+
+@dp.message(AdminState.waiting_delete_product)
+async def admin_delete_product_confirm(message: Message, state: FSMContext):
+    product_name = message.text.strip()
+    if product_name not in get_all_products():
+        await message.answer("❌ Товар не найден.")
+        return
+    if delete_product(product_name):
+        await message.answer(f"✅ Товар «{product_name}» удалён.")
+    else:
+        await message.answer(f"❌ Не удалось удалить.")
+    await state.clear()
+    await show_admin_panel(message)
+
+# ---------- Удаление размера ----------
+@dp.message(F.text == "❌ Удалить размер")
+async def admin_delete_size_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    products = get_all_products()
+    if not products:
+        await message.answer("⚠️ Нет товаров.")
+        return
+    await state.set_state(AdminState.waiting_delete_size_product)
+    keyboard = get_products_keyboard(products)
+    await message.answer("Выберите товар, у которого удалить размер:", reply_markup=keyboard)
+
+@dp.message(AdminState.waiting_delete_size_product, F.text.in_(["◀️ Назад", "❌ Выход"]))
+async def admin_delete_size_product_nav(message: Message, state: FSMContext):
+    if message.text == "❌ Выход":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    if message.text == "◀️ Назад":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+
+@dp.message(AdminState.waiting_delete_size_product)
+async def admin_delete_size_product(message: Message, state: FSMContext):
+    product_name = message.text.strip()
+    if product_name not in get_all_products():
+        await message.answer("❌ Товар не найден.")
+        return
+    sizes = get_sizes_of_product(product_name)
+    if not sizes:
+        await message.answer("❌ У товара нет размеров.")
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    await state.update_data(delete_size_product=product_name)
+    keyboard = get_sizes_keyboard(sizes)
+    await state.set_state(AdminState.waiting_delete_size_value)
+    await message.answer(f"Выберите размер для удаления:", reply_markup=keyboard)
+
+@dp.message(AdminState.waiting_delete_size_value, F.text.in_(["◀️ Назад", "❌ Выход"]))
+async def admin_delete_size_value_nav(message: Message, state: FSMContext):
+    if message.text == "❌ Выход":
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    if message.text == "◀️ Назад":
+        await state.set_state(AdminState.waiting_delete_size_product)
+        products = get_all_products()
+        keyboard = get_products_keyboard(products)
+        await message.answer("Выберите товар:", reply_markup=keyboard)
+        return
+
+@dp.message(AdminState.waiting_delete_size_value)
+async def admin_delete_size_confirm(message: Message, state: FSMContext):
+    size = message.text.strip()
+    data = await state.get_data()
+    product_name = data.get("delete_size_product")
+    if size not in get_sizes_of_product(product_name):
+        await message.answer("❌ Такого размера нет.")
+        return
+    if delete_size(product_name, size):
+        await message.answer(f"✅ Размер «{size}» удалён.")
+    else:
+        await message.answer("❌ Ошибка удаления.")
+    await state.clear()
+    await show_admin_panel(message)
+
+# ---------- Показать все товары ----------
+@dp.message(F.text == "📦 Все товары")
+async def admin_all_products(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    products = get_product_with_sizes_and_prices()
+    if not products:
+        await message.answer("Нет товаров.")
+        return
+    for name, sizes in products.items():
+        text = f"<b>{name}</b>\n\n"
+        for size, price in sizes.items():
+            text += f"• {size} — {price} BYN\n"
+        photos = get_product_photos(name)
+        if photos:
+            await message.answer_photo(photos[0], caption=text)
         else:
             await message.answer(text)
 
-
-@dp.message(F.text == "👤 Режим покупателя")
-@handle_errors
-async def admin_buyer_mode(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): 
+# ---------- Статистика ----------
+@dp.message(F.text == "📊 Статистика")
+async def admin_statistics(message: Message):
+    if not is_admin(message.from_user.id):
         return
-    await show_products(message, state)
+    total_orders = get_total_orders()
+    total_revenue = get_total_revenue()
+    top_products = get_top_products(5)
+    top_sizes = get_top_sizes(5)
 
-
-async def show_admin_panel(message: Message):
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="➕ Добавить товар")],
-            [KeyboardButton(text="📏 Добавить размер"), KeyboardButton(text="🗑️ Удалить размер")],
-            [KeyboardButton(text="🗑️ Удалить товар")],
-            [KeyboardButton(text="📦 Все товары")],
-            [KeyboardButton(text="📊 Статистика")],
-            [KeyboardButton(text="👤 Режим покупателя")]
-        ], 
-        resize_keyboard=True
-    )
-    await message.answer(
-        "🔧 **АДМИН ПАНЕЛЬ**\n\n"
-        f"📊 Всего заказов: {get_orders_count()}",
-        reply_markup=keyboard
-    )
-
-
-# =========================
-# FALLBACK HANDLER
-# =========================
-
-@dp.message(F.text)
-@handle_errors
-async def fallback_handler(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-    
-    admin_states = [
-        AdminState.waiting_product_name,
-        AdminState.waiting_product_photo,
-        AdminState.waiting_size_product,
-        AdminState.waiting_size_value,
-        AdminState.waiting_size_price,
-        AdminState.confirm_delete,
-        AdminState.waiting_delete_size_product,
-        AdminState.waiting_delete_size_value
-    ]
-    
-    if is_admin(message.from_user.id):
-        if current_state in admin_states:
-            return
-        if current_state is None:
-            await message.answer("🔧 Используйте кнопки админ-панели 👇")
-            return
-    
-    if current_state is None:
-        await message.answer("Нажмите /start чтобы начать заказ 👟")
+    stat_text = f"<b>📊 СТАТИСТИКА ПРОДАЖ</b>\n\n"
+    stat_text += f"📦 Всего заказов: <b>{total_orders}</b>\n"
+    stat_text += f"💰 Общая выручка: <b>{total_revenue} BYN</b>\n\n"
+    stat_text += "<b>🏆 Самые продаваемые товары:</b>\n"
+    if top_products:
+        for i, (name, count) in enumerate(top_products, 1):
+            stat_text += f"{i}. {name} — {count} шт.\n"
     else:
-        await message.answer("Пожалуйста, используйте кнопки ниже 👇\nИли /cancel для отмены.")
+        stat_text += "Нет данных.\n"
+    stat_text += "\n<b>👕 Самые продаваемые размеры:</b>\n"
+    if top_sizes:
+        for i, (size, count) in enumerate(top_sizes, 1):
+            stat_text += f"{i}. {size} — {count} шт.\n"
+    else:
+        stat_text += "Нет данных.\n"
+    await message.answer(stat_text)
 
+# ---------- Режим покупателя ----------
+@dp.message(F.text == "👤 Режим покупателя")
+async def switch_to_customer(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await message.answer("Переход в режим покупателя...", reply_markup=ReplyKeyboardRemove())
+    if get_products_count() == 0:
+        await message.answer("⚠️ Каталог пуст. Добавьте товары.")
+        await show_admin_panel(message)
+        return
+    msg_id = await send_product_card(message.chat.id, 0)
+    if msg_id:
+        await state.update_data(catalog_message_id=msg_id, current_index=0)
 
-# =========================
-# MAIN
-# =========================
+# ---------- Отмена ----------
+@dp.message(Command("cancel"))
+async def cancel_handler(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Действие отменено", reply_markup=ReplyKeyboardRemove())
+    if is_admin(message.from_user.id):
+        await show_admin_panel(message)
+    else:
+        if get_products_count() > 0:
+            msg_id = await send_product_card(message.chat.id, 0)
+            if msg_id:
+                await state.update_data(catalog_message_id=msg_id, current_index=0)
 
+# ---------------------- ЗАПУСК ----------------------
 async def main():
-    logger.info("=" * 50)
-    logger.info("🤖 Бот запущен")
-    logger.info(f"👑 Админы: {ADMIN_IDS}")
-    logger.info("=" * 50)
-    
-    # Создаём бэкап при запуске
-    backup_db()
-    
-    try:
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.error(f"Критическая ошибка при запуске бота: {e}")
-        raise
-    finally:
-        logger.info("Бот остановлен")
-
+    logging.info("BOT STARTED")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
