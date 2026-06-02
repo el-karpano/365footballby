@@ -1,7 +1,7 @@
 import sqlite3
 import os
 
-DB_NAME = os.getenv("DB_PATH", "E:/python_works/365football/shop.db")
+DB_NAME = os.getenv("DB_PATH", "shop.db")
 
 def get_connection():
     os.makedirs(os.path.dirname(DB_NAME) or ".", exist_ok=True)
