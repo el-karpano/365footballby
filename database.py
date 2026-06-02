@@ -1,8 +1,7 @@
 import sqlite3
 import os
 
-
-DB_NAME = os.getenv("DB_PATH", "shop.db")
+DB_NAME = os.getenv("DB_PATH", "E:/python_works/365football/shop.db")
 
 def get_connection():
     os.makedirs(os.path.dirname(DB_NAME) or ".", exist_ok=True)
@@ -51,9 +50,16 @@ def init_db():
         phone TEXT,
         address TEXT,
         user_id INTEGER,
+        username TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+
+    # Для старых баз – добавим колонку username, если её нет
+    try:
+        cur.execute("ALTER TABLE orders ADD COLUMN username TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -92,7 +98,7 @@ def add_product(name, photo_file_ids, category_id):
         cur = conn.cursor()
         photos_str = "|||".join(photo_file_ids) if photo_file_ids else None
         cur.execute(
-            "INSERT INTO products(name, photo_file_id, category_id) VALUES (?, ?, ?)",
+            "INSERT INTO products(name, photo, category_id) VALUES (?, ?, ?)",
             (name, photos_str, category_id)
         )
         conn.commit()
@@ -141,7 +147,7 @@ def get_product_by_index(index, category_id):
 def get_product_photos(product_name):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT photo_file_id FROM products WHERE name = ?", (product_name,))
+    cur.execute("SELECT photo FROM products WHERE name = ?", (product_name,))
     row = cur.fetchone()
     conn.close()
     if row and row[0]:
@@ -206,8 +212,7 @@ def save_order(data):
     cur.execute("""
         INSERT INTO orders (
             product_name, size, price, delivery,
-            customer_name, customer_phone, customer_address,
-            customer_username, customer_id
+            fio, phone, address, user_id, username
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data.get('product'),
@@ -217,8 +222,8 @@ def save_order(data):
         data.get('fio'),
         data.get('phone'),
         data.get('address'),
-        data.get('username'),
-        data.get('user_id')
+        data.get('user_id'),
+        data.get('username')
     ))
     conn.commit()
     conn.close()
@@ -267,4 +272,22 @@ def get_top_sizes(limit=5):
     conn.close()
     return [(row['size'], row['count']) for row in rows]
 
+# ---------- ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ БЕЗОПАСНОСТИ ----------
+def product_exists(product_name: str) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM products WHERE name = ?", (product_name,))
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+def size_exists(product_name: str, size: str) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM sizes WHERE product_name = ? AND size = ?", (product_name, size))
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+print("DB PATH:", DB_NAME)
 init_db()

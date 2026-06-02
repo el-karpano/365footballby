@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import os
+from aiogram.types import FSInputFile
 from config import BACKUP_CHAT_ID, DB_PATH
 from datetime import datetime
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums.parse_mode import ParseMode
 from aiogram.filters import CommandStart, Command, StateFilter
@@ -14,6 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
 )
 from aiogram.utils.media_group import MediaGroupBuilder
+from typing import Callable, Dict, Any, Awaitable
 
 from config import ADMIN_IDS, BOT_TOKEN
 from database import (
@@ -22,12 +25,52 @@ from database import (
     get_sizes_of_product, save_order,
     get_top_products, get_top_sizes, get_total_orders, get_total_revenue,
     get_products_count, get_product_by_index, get_categories, get_category_name,
-    add_category,init_db
+    add_category, init_db,
+    product_exists, size_exists
 )
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
+
+# ---------------------- MIDDLEWARE ДЛЯ ПЕРЕХВАТА ОШИБОК ----------------------
+class ExceptionMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        try:
+            return await handler(event, data)
+        except Exception as e:
+            logging.error(f"❌ Unhandled exception: {e}", exc_info=True)
+            try:
+                if isinstance(event, Message):
+                    await event.answer("⚠️ Произошла техническая ошибка. Попробуйте позже или нажмите /start.")
+                elif hasattr(event, 'message'):
+                    await event.message.answer("⚠️ Ошибка. Нажмите /start.")
+            except:
+                pass
+            return
+
+dp.message.middleware(ExceptionMiddleware())
+dp.callback_query.middleware(ExceptionMiddleware())
+
+# ---------------------- НОВАЯ ФУНКЦИЯ БЭКАПА ----------------------
+async def send_db_backup_now(bot: Bot):
+    if os.path.exists(DB_PATH):
+        try:
+            time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            caption = f"📦 Бэкап базы после изменения\n🕒 {time}"
+            await bot.send_document(
+                chat_id=BACKUP_CHAT_ID,
+                document=FSInputFile(DB_PATH),
+                caption=caption
+            )
+            logging.info("Бэкап отправлен")
+        except Exception as e:
+            logging.error(f"Ошибка отправки бэкапа: {e}")
 
 # ---------------------- СОСТОЯНИЯ ----------------------
 class OrderState(StatesGroup):
@@ -53,39 +96,6 @@ class AdminState(StatesGroup):
 # ---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
-
-
-last_backup_time = 0
-async def send_db_backup(bot):
-    global last_backup_time
-
-    while True:
-        try:
-            if os.path.exists(DB_PATH):
-
-                file_mtime = os.path.getmtime(DB_PATH)
-
-                # ❗ база не изменилась → пропускаем
-                if file_mtime <= last_backup_time:
-                    await asyncio.sleep(60 * 60)
-                    continue
-
-                last_backup_time = file_mtime
-
-                time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                caption = f"📦 Backup базы\n🕒 {time}"
-
-                await bot.send_document(
-                    chat_id=BACKUP_CHAT_ID,
-                    document=open(DB_PATH, "rb"),
-                    caption=caption
-                )
-
-        except Exception as e:
-            print(f"Backup error: {e}")
-
-        await asyncio.sleep(60 * 60)
 
 async def show_admin_panel(message: Message):
     keyboard = ReplyKeyboardMarkup(
@@ -161,7 +171,6 @@ async def send_product_card(chat_id, category_id, product_index):
     return msg.message_id
 
 async def ensure_categories():
-    """Создаёт стандартные категории, если их ещё нет."""
     cats = get_categories()
     if not cats:
         default_cats = [
@@ -240,18 +249,14 @@ async def prev_product_cat(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "back_to_categories")
 async def back_to_categories(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-
     try:
         await callback.message.delete()
     except:
         pass
-
     categories = get_categories()
-
     if not categories:
         await callback.message.answer("Каталог пуст.")
         return
-
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -263,14 +268,11 @@ async def back_to_categories(callback: CallbackQuery, state: FSMContext):
             for cat_id, name in categories
         ]
     )
-
     await callback.message.answer(
         "Выберите категорию:",
         reply_markup=keyboard
     )
-
     await state.set_state(OrderState.selecting_category)
-
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("cat_next_"))
@@ -300,7 +302,7 @@ async def next_product_cat(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка загрузки")
     await callback.answer()
 
-# ---------------------- ОФОРМЛЕНИЕ ЗАКАЗА (рабочий блок) ----------------------
+# ---------------------- ОФОРМЛЕНИЕ ЗАКАЗА (без бэкапа) ----------------------
 @dp.callback_query(F.data.startswith("order|"))
 async def order_start(callback: CallbackQuery, state: FSMContext):
     try:
@@ -308,6 +310,9 @@ async def order_start(callback: CallbackQuery, state: FSMContext):
     except:
         pass
     product_name = callback.data.split("|", 1)[1]
+    if not product_exists(product_name):
+        await callback.answer("❌ Товар больше недоступен.", show_alert=True)
+        return
     sizes = get_product_with_sizes_and_prices().get(product_name, {})
     if not sizes:
         await callback.answer("Нет доступных размеров", show_alert=True)
@@ -510,7 +515,7 @@ async def back_to_fio(callback: CallbackQuery, state: FSMContext):
     await state.set_state(OrderState.waiting_fio)
     await callback.answer()
 
-# ---------------------- ОТПРАВКА ЗАКАЗА АДМИНАМ ----------------------
+# ---------------------- ОТПРАВКА ЗАКАЗА АДМИНАМ (без бэкапа) ----------------------
 async def send_order(message: Message, state: FSMContext, data: dict):
     order_msg_id = data.get("order_message_id")
     if order_msg_id:
@@ -552,7 +557,10 @@ async def send_order(message: Message, state: FSMContext, data: dict):
     for admin_id in ADMIN_IDS:
         try:
             if photo:
-                await bot.send_photo(admin_id, photo=photo, caption=text)
+                try:
+                    await bot.send_photo(admin_id, photo=photo, caption=text)
+                except:
+                    await bot.send_message(admin_id, text)
             else:
                 await bot.send_message(admin_id, text)
         except Exception as e:
@@ -569,7 +577,7 @@ async def send_order(message: Message, state: FSMContext, data: dict):
     else:
         await message.answer("Каталог пуст. Нажмите /start")
 
-# ---------------------- АДМИНСКИЕ ФУНКЦИИ (все рабочие) ----------------------
+# ---------------------- АДМИНСКИЕ ФУНКЦИИ (с вызовом бэкапа после изменений) ----------------------
 @dp.message(F.text == "➕ Добавить товар")
 async def admin_add_product_start(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
@@ -597,7 +605,14 @@ async def admin_product_name(message: Message, state: FSMContext):
         await state.clear()
         await show_admin_panel(message)
         return
-    await state.update_data(product_name=message.text.strip(), photos=[])
+    name = message.text.strip()
+    if not name:
+        await message.answer("❌ Название не может быть пустым. Введите название товара:")
+        return
+    if product_exists(name):
+        await message.answer("❌ Товар с таким названием уже существует. Введите другое название:")
+        return
+    await state.update_data(product_name=name, photos=[])
     await state.set_state(AdminState.waiting_product_photo)
     keyboard = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="➕ Добавить ещё")], [KeyboardButton(text="✅ Готово")], [KeyboardButton(text="◀️ Назад"), KeyboardButton(text="❌ Выход")]],
@@ -616,27 +631,37 @@ async def admin_product_photo(message: Message, state: FSMContext):
 
 @dp.message(AdminState.waiting_product_photo, F.text.in_(["➕ Добавить ещё", "✅ Готово", "◀️ Назад", "❌ Выход"]))
 async def admin_product_photo_nav(message: Message, state: FSMContext):
-    if message.text == "❌ Выход":
-        await state.clear()
-        await show_admin_panel(message)
+    # Защита от двойной обработки
+    data = await state.get_data()
+    if data.get("processing"):
+        await message.answer("⏳ Подождите, предыдущее действие ещё выполняется...")
         return
-    if message.text == "◀️ Назад":
-        await state.set_state(AdminState.waiting_product_name)
-        await message.answer("Введите название товара:", reply_markup=admin_nav_keyboard)
-        return
-    if message.text == "✅ Готово":
-        data = await state.get_data()
-        photos = data.get("photos", [])
-        if not photos:
-            await message.answer("❌ Вы не отправили ни одного фото. Отправьте хотя бы одно.")
+    await state.update_data(processing=True)
+    try:
+        if message.text == "❌ Выход":
+            await state.clear()
+            await show_admin_panel(message)
             return
-        success = add_product(data["product_name"], photos, data["category_id"])
-        if success:
-            await message.answer("✅ Товар добавлен")
-        else:
-            await message.answer("❌ Такой товар уже существует")
-        await state.clear()
-        await show_admin_panel(message)
+        if message.text == "◀️ Назад":
+            await state.set_state(AdminState.waiting_product_name)
+            await message.answer("Введите название товара:", reply_markup=admin_nav_keyboard)
+            return
+        if message.text == "✅ Готово":
+            data = await state.get_data()
+            photos = data.get("photos", [])
+            if not photos:
+                await message.answer("❌ Вы не отправили ни одного фото. Отправьте хотя бы одно.")
+                return
+            success = add_product(data["product_name"], photos, data["category_id"])
+            if success:
+                await message.answer("✅ Товар добавлен")
+                await send_db_backup_now(message.bot)
+            else:
+                await message.answer("❌ Такой товар уже существует")
+            await state.clear()
+            await show_admin_panel(message)
+    finally:
+        await state.update_data(processing=False)
 
 @dp.message(AdminState.waiting_product_photo)
 async def admin_product_photo_invalid(message: Message):
@@ -687,12 +712,21 @@ async def admin_size_price(message: Message, state: FSMContext):
         return
     try:
         price = int(message.text)
+        if price <= 0:
+            await message.answer("❌ Цена должна быть положительным числом. Попробуйте снова.")
+            return
     except ValueError:
         await message.answer("❌ Цена должна быть числом. Попробуйте снова.")
         return
     data = await state.get_data()
-    add_size(data["product"], data["size"], price)
+    product_name = data["product"]
+    size_value = data["size"]
+    if size_exists(product_name, size_value):
+        await message.answer(f"❌ Размер «{size_value}» уже существует у товара «{product_name}».\nУдалите старый или введите другой размер.")
+        return
+    add_size(product_name, size_value, price)
     await message.answer("✅ Размер добавлен")
+    await send_db_backup_now(message.bot)
     await state.clear()
     await show_admin_panel(message)
 
@@ -719,6 +753,7 @@ async def admin_delete_product_confirm(message: Message, state: FSMContext):
         return
     if delete_product(product_name):
         await message.answer(f"✅ Товар «{product_name}» удалён.")
+        await send_db_backup_now(message.bot)
     else:
         await message.answer("❌ Не удалось удалить.")
     await state.clear()
@@ -772,8 +807,9 @@ async def admin_delete_size_confirm(message: Message, state: FSMContext):
         return
     if delete_size(product_name, size):
         await message.answer(f"✅ Размер «{size}» удалён.")
+        await send_db_backup_now(message.bot)
     else:
-        await message.answer("❌ Ошибка удаления.")
+        await message.answer("❌ Не удалось удалить. Возможно, такого размера уже нет.")
     await state.clear()
     await show_admin_panel(message)
 
@@ -848,6 +884,15 @@ async def cancel_handler(message: Message, state: FSMContext):
         else:
             await message.answer("Каталог пуст. Нажмите /start")
 
+# ---------------------- FALLBACK ДЛЯ ЛЮБЫХ ДРУГИХ СООБЩЕНИЙ ----------------------
+@dp.message()
+async def fallback_handler(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state:
+        await message.answer("❓ Не понимаю. Нажмите /cancel, чтобы отменить текущее действие, или /start заново.")
+    else:
+        await message.answer("👋 Нажмите /start для начала работы.")
+
 # ---------------------- ПЕРЕХВАТ НЕИЗВЕСТНЫХ CALLBACK ----------------------
 @dp.callback_query()
 async def catch_unknown_callback(callback: CallbackQuery):
@@ -857,7 +902,17 @@ async def catch_unknown_callback(callback: CallbackQuery):
 # ---------------------- ЗАПУСК ----------------------
 async def main():
     init_db()
-    asyncio.create_task(send_db_backup(bot))
+    # Проверка BACKUP_CHAT_ID
+    try:
+        await bot.send_message(BACKUP_CHAT_ID, "🟢 Бот запущен. Бэкапы будут приходить сюда.")
+    except Exception as e:
+        logging.error(f"❌ Не удалось отправить тестовое сообщение в BACKUP_CHAT_ID={BACKUP_CHAT_ID}. Ошибка: {e}")
+    # Проверка админов
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, "🟢 Админ-панель активна.")
+        except:
+            logging.error(f"❌ Не удалось написать админу {admin_id}. Проверьте ID.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
