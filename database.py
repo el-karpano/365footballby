@@ -1,9 +1,11 @@
 import sqlite3
 import os
 
-DB_NAME = os.environ.get("DB_PATH", "shop.db")
+
+DB_NAME = os.getenv("DB_PATH", "shop.db")
 
 def get_connection():
+    os.makedirs(os.path.dirname(DB_NAME) or ".", exist_ok=True)
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
@@ -11,54 +13,48 @@ def get_connection():
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
-        )
+    CREATE TABLE IF NOT EXISTS categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE
+    )
     """)
+
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            photo_file_id TEXT,
-            category_id INTEGER,
-            FOREIGN KEY (category_id) REFERENCES categories(id)
-        )
+    CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        photo TEXT,
+        category_id INTEGER
+    )
     """)
+
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS sizes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_name TEXT NOT NULL,
-            size TEXT NOT NULL,
-            price INTEGER NOT NULL,
-            UNIQUE(product_name, size)
-        )
+    CREATE TABLE IF NOT EXISTS sizes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_name TEXT,
+        size TEXT,
+        price INTEGER,
+        UNIQUE(product_name, size)
+    )
     """)
+
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_name TEXT NOT NULL,
-            size TEXT NOT NULL,
-            price INTEGER NOT NULL,
-            delivery TEXT,
-            customer_name TEXT,
-            customer_phone TEXT,
-            customer_address TEXT,
-            customer_username TEXT,
-            customer_id INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_name TEXT,
+        size TEXT,
+        price INTEGER,
+        delivery TEXT,
+        fio TEXT,
+        phone TEXT,
+        address TEXT,
+        user_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
     """)
-    cur.execute("PRAGMA table_info(products)")
-    columns = [col[1] for col in cur.fetchall()]
-    if 'category_id' not in columns:
-        cur.execute("ALTER TABLE products ADD COLUMN category_id INTEGER")
-    # Создаём дефолтную категорию, если нет ни одной
-    cur.execute("SELECT id FROM categories LIMIT 1")
-    if not cur.fetchone():
-        cur.execute("INSERT INTO categories (name) VALUES (?)", ("NIKE MERCURIAL",))
-        conn.commit()
+
     conn.commit()
     conn.close()
 

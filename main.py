@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from config import BACKUP_CHAT_ID, DB_PATH
+from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums.parse_mode import ParseMode
@@ -20,7 +22,7 @@ from database import (
     get_sizes_of_product, save_order,
     get_top_products, get_top_sizes, get_total_orders, get_total_revenue,
     get_products_count, get_product_by_index, get_categories, get_category_name,
-    add_category,
+    add_category,init_db
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +53,39 @@ class AdminState(StatesGroup):
 # ---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+last_backup_time = 0
+async def send_db_backup(bot):
+    global last_backup_time
+
+    while True:
+        try:
+            if os.path.exists(DB_PATH):
+
+                file_mtime = os.path.getmtime(DB_PATH)
+
+                # ❗ база не изменилась → пропускаем
+                if file_mtime <= last_backup_time:
+                    await asyncio.sleep(60 * 60)
+                    continue
+
+                last_backup_time = file_mtime
+
+                time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                caption = f"📦 Backup базы\n🕒 {time}"
+
+                await bot.send_document(
+                    chat_id=BACKUP_CHAT_ID,
+                    document=open(DB_PATH, "rb"),
+                    caption=caption
+                )
+
+        except Exception as e:
+            print(f"Backup error: {e}")
+
+        await asyncio.sleep(60 * 60)
 
 async def show_admin_panel(message: Message):
     keyboard = ReplyKeyboardMarkup(
@@ -821,8 +856,8 @@ async def catch_unknown_callback(callback: CallbackQuery):
 
 # ---------------------- ЗАПУСК ----------------------
 async def main():
-    await ensure_categories()
-    logging.info("Бот запущен")
+    init_db()
+    asyncio.create_task(send_db_backup(bot))
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
