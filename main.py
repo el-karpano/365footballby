@@ -997,10 +997,11 @@ async def main():
     app.router.add_post("/api/order_from_n8n", handle_n8n_order)
     runner = web.AppRunner(app)
     await runner.setup()
+    port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, host='0.0.0.0', port=8080)
     await site.start()
     logging.info("HTTP сервер запущен на порту 8080")
-    
+
     await init_db()
     try:
         await bot.send_message(BACKUP_CHAT_ID, "🟢 Бот запущен. Заказы от n8n принимаются на /api/order_from_n8n")
