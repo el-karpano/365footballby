@@ -976,8 +976,31 @@ async def catch_unknown_callback(callback: CallbackQuery):
     logging.warning(f"Неизвестный callback: {callback.data}")
     await callback.answer(f"❓ Неизвестная команда: {callback.data}", show_alert=True)
 
+async def handle_n8n_order(request: web.Request) -> web.Response:
+    from config import WEBHOOK_SECRET
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {WEBHOOK_SECRET}":
+        return web.json_response({"status": "error", "message": "Unauthorized"}, status=401)
+    try:
+        data = await request.json()
+    except:
+        return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    # Сохраняем заказ и отправляем админам (у вас уже есть функции)
+    await save_order(data)
+    await notify_admins_about_order(data)
+    return web.json_response({"status": "ok"})
+
 # ---------------------- ЗАПУСК ----------------------
 async def main():
+        # Запускаем HTTP-сервер для n8n
+    app = web.Application()
+    app.router.add_post("/api/order_from_n8n", handle_n8n_order)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host='0.0.0.0', port=8080)
+    await site.start()
+    logging.info("HTTP сервер запущен на порту 8080")
+    
     await init_db()
     try:
         await bot.send_message(BACKUP_CHAT_ID, "🟢 Бот запущен. Заказы от n8n принимаются на /api/order_from_n8n")
