@@ -4,7 +4,7 @@ import os
 import aiohttp
 from aiohttp import web
 from aiogram import types, Router
-from config import BACKUP_CHAT_ID, DB_PATH, WEBHOOK_HOST, WEBHOOK_PORT, WEBHOOK_SECRET
+from config import BACKUP_CHAT_ID, DB_PATH, WEBHOOK_SECRET
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
@@ -645,7 +645,7 @@ async def handle_n8n_order(request: web.Request) -> web.Response:
     data.setdefault("address", "Самовывоз" if data.get("delivery") == "🏪 Самовывоз" else "")
     data.setdefault("username", "n8n-заказ")
 
-    await save_order(data)  # data содержит ключи: product, size, price, delivery, fio, phone, address, user_id, username
+    await save_order(data)
     await notify_admins_about_order(data)
     return web.json_response({"status": "ok", "message": "Order created"})
 
@@ -976,54 +976,30 @@ async def catch_unknown_callback(callback: CallbackQuery):
     logging.warning(f"Неизвестный callback: {callback.data}")
     await callback.answer(f"❓ Неизвестная команда: {callback.data}", show_alert=True)
 
-async def handle_n8n_order(request: web.Request) -> web.Response:
-    from config import WEBHOOK_SECRET
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {WEBHOOK_SECRET}":
-        return web.json_response({"status": "error", "message": "Unauthorized"}, status=401)
-    try:
-        data = await request.json()
-    except:
-        return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
-    # Сохраняем заказ и отправляем админам (у вас уже есть функции)
-    await save_order(data)
-    await notify_admins_about_order(data)
-    return web.json_response({"status": "ok"})
-
 # ---------------------- ЗАПУСК ----------------------
 async def main():
-        # Запускаем HTTP-сервер для n8n
+    await init_db()
+
+    # Отправляем стартовые сообщения
+    try:
+        await bot.send_message(BACKUP_CHAT_ID, "🟢 Бот запущен на Railway")
+    except Exception as e:
+        logging.error(f"Не удалось отправить сообщение в BACKUP_CHAT_ID: {e}")
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, "🟢 Админ-панель активна. Уведомления о заказах отправляются напрямую.")
+        except:
+            logging.error(f"Не удалось написать админу {admin_id}")
+
+    # Запускаем HTTP-сервер для n8n (один раз!)
     app = web.Application()
     app.router.add_post("/api/order_from_n8n", handle_n8n_order)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, host='0.0.0.0', port=8080)
+    site = web.TCPSite(runner, host='0.0.0.0', port=port)
     await site.start()
-    logging.info("HTTP сервер запущен на порту 8080")
-
-    await init_db()
-    try:
-        await bot.send_message(BACKUP_CHAT_ID, "🟢 Бот запущен. Заказы от n8n принимаются на /api/order_from_n8n")
-    except Exception as e:
-        logging.error(f"❌ Не удалось отправить тестовое сообщение в BACKUP_CHAT_ID={BACKUP_CHAT_ID}. Ошибка: {e}")
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(admin_id, "🟢 Админ-панель активна. Уведомления о заказах отправляются напрямую.")
-        except:
-            logging.error(f"❌ Не удалось написать админу {admin_id}. Проверьте ID.")
-
-    # Создаём aiohttp веб-приложение
-    app = web.Application()
-    # Эндпоинт для приёма заказов от n8n
-    app.router.add_post("/api/order_from_n8n", handle_n8n_order)
-
-    # Запускаем веб-сервер в отдельной задаче
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host=WEBHOOK_HOST, port=WEBHOOK_PORT)
-    await site.start()
-    logging.info(f"HTTP сервер для n8n запущен на {WEBHOOK_HOST}:{WEBHOOK_PORT}")
+    logging.info(f"HTTP сервер для n8n запущен на порту {port}")
 
     # Запускаем телеграм-бота
     await dp.start_polling(bot)
