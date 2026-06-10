@@ -10,7 +10,6 @@ DB_CONFIG = {
     "password": os.getenv("SUPABASE_PASSWORD", ""),
 }
 
-# Глобальный пул соединений
 _pool = None
 
 async def get_pool():
@@ -21,7 +20,7 @@ async def get_pool():
             min_size=1,
             max_size=10,
             command_timeout=60,
-            statement_cache_size=0,  # отключаем prepared statements для pgbouncer
+            statement_cache_size=0,   # важно для pgbouncer
         )
     return _pool
 
@@ -31,11 +30,9 @@ async def get_connection():
     return await pool.acquire()
 
 async def release_connection(conn):
-    """Возвращает соединение обратно в пул"""
     pool = await get_pool()
     await pool.release(conn)
 
-# ---------------------- init_db ----------------------
 async def init_db():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -77,12 +74,10 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Добавляем колонку username, если её нет (для старых схем)
         await conn.execute("""
             ALTER TABLE orders ADD COLUMN IF NOT EXISTS username TEXT
         """)
 
-# ---------------------- categories ----------------------
 async def get_categories() -> List[Tuple[int, str]]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -104,7 +99,6 @@ async def add_category(name: str) -> bool:
         except asyncpg.UniqueViolationError:
             return False
 
-# ---------------------- products ----------------------
 async def add_product(name: str, photo_file_ids: List[str], category_id: int) -> bool:
     pool = await get_pool()
     photos_str = "|||".join(photo_file_ids) if photo_file_ids else None
@@ -143,7 +137,7 @@ async def get_product_by_index(index: int, category_id: int):
         total = len(rows)
         if 0 <= index < total:
             product_name = rows[index]["name"]
-            sizes = await get_product_with_sizes_and_prices()  # эта функция использует свой пул
+            sizes = await get_product_with_sizes_and_prices()
             sizes = sizes.get(product_name, {})
             photos = await get_product_photos(product_name)
             return product_name, sizes, photos, total
@@ -178,7 +172,6 @@ async def delete_product(product_name: str) -> bool:
         await conn.execute("DELETE FROM products WHERE name = $1", product_name)
         return True
 
-# ---------------------- sizes ----------------------
 async def add_size(product_name: str, size: str, price: int) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -206,7 +199,6 @@ async def get_sizes_of_product(product_name: str) -> List[str]:
         rows = await conn.fetch("SELECT size FROM sizes WHERE product_name = $1", product_name)
         return [row["size"] for row in rows]
 
-# ---------------------- orders ----------------------
 async def save_order(data: dict):
     pool = await get_pool()
     async with pool.acquire() as conn:
