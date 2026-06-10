@@ -522,11 +522,13 @@ async def exit_ai_mode(message: Message, state: FSMContext):
 
 async def forward_to_n8n_and_reply(message: Message):
     n8n_webhook_url = "https://elkarpano13.app.n8n.cloud/webhook/869a2c3a-da4d-46c1-ad7c-e7ac150b534f"
+    username = message.from_user.username if message.from_user.username else None
     payload = {
         "chat_id": message.chat.id,
         "user_id": message.from_user.id,
         "message_text": message.text,
         "first_name": message.from_user.first_name,
+        "username": username,
     }
     print(f"📤 Отправляю в n8n: {payload}")
     try:
