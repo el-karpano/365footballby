@@ -169,11 +169,13 @@ async def ensure_categories():
             "NIKE TIEMPO",
             "ADIDAS F50",
             "PUMA FUTURE",
+            "Детские размеры",                      # 👈 новая категория
             "🔥 На скидке (последние размеры)"
         ]
         for cat in default_cats:
             await add_category(cat)
         logging.info("Добавлены стандартные категории")
+
 
 # ---------------------- ПОКУПАТЕЛЬ: СТАРТ И КАТЕГОРИИ ----------------------
 @dp.message(CommandStart())
