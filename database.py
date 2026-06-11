@@ -20,18 +20,11 @@ async def get_pool():
             min_size=1,
             max_size=10,
             command_timeout=60,
-            statement_cache_size=0,   # важно для pgbouncer
+            statement_cache_size=0,
         )
     return _pool
 
-async def get_connection():
-    """Возвращает соединение из пула (для обратной совместимости)"""
-    pool = await get_pool()
-    return await pool.acquire()
 
-async def release_connection(conn):
-    pool = await get_pool()
-    await pool.release(conn)
 
 async def init_db():
     pool = await get_pool()
@@ -74,15 +67,21 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await conn.execute("""
-            ALTER TABLE orders ADD COLUMN IF NOT EXISTS username TEXT
-        """)
 
 async def get_categories() -> List[Tuple[int, str]]:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT id, name FROM categories")
+        rows = await conn.fetch("""
+            SELECT id, name FROM categories
+            ORDER BY
+                CASE name
+                    WHEN 'Детские размеры' THEN 1
+                    WHEN '🔥 На скидке (последние размеры)' THEN 2
+                    ELSE 3
+                END, id
+        """)
         return [(row["id"], row["name"]) for row in rows]
+
 
 async def get_category_name(category_id: int) -> Optional[str]:
     pool = await get_pool()
