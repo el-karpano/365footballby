@@ -75,9 +75,9 @@ async def get_categories() -> List[Tuple[int, str]]:
             SELECT id, name FROM categories
             ORDER BY
                 CASE name
-                    WHEN 'Детские размеры' THEN 1
-                    WHEN '🔥 На скидке (последние размеры)' THEN 2
-                    ELSE 3
+                    WHEN '🔥 На скидке (последние размеры)' THEN 3
+                    WHEN 'Детские размеры' THEN 2
+                    ELSE 1
                 END, id
         """)
         return [(row["id"], row["name"]) for row in rows]

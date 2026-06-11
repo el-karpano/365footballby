@@ -169,7 +169,7 @@ async def ensure_categories():
             "NIKE TIEMPO",
             "ADIDAS F50",
             "PUMA FUTURE",
-            "Детские размеры",                      # 👈 новая категория
+            "Детские размеры",
             "🔥 На скидке (последние размеры)"
         ]
         for cat in default_cats:
