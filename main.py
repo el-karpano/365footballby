@@ -4,7 +4,7 @@ import os
 import aiohttp
 from aiohttp import web
 from aiogram import types, Router
-from config import BACKUP_CHAT_ID, DB_PATH, WEBHOOK_SECRET
+from config import BACKUP_CHAT_ID, WEBHOOK_SECRET
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
@@ -28,7 +28,8 @@ from database import (
     get_top_products, get_top_sizes, get_total_orders, get_total_revenue,
     get_products_count, get_product_by_index, get_categories, get_category_name,
     add_category, init_db,
-    product_exists, size_exists
+    product_exists, size_exists,
+    get_product_name_by_id, get_product_id_by_name
 )
 
 # ---------------------- ГЛОБАЛЬНОЕ ХРАНИЛИЩЕ СЕССИЙ ИИ ----------------------
@@ -118,8 +119,8 @@ def get_sizes_keyboard(sizes):
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 async def send_product_card(chat_id, category_id, product_index):
-    product_name, sizes, photos, total = await get_product_by_index(product_index, category_id)
-    if not product_name:
+    product_id, product_name, sizes, photos, total = await get_product_by_index(product_index, category_id)
+    if not product_id:
         return None
     text = f"<b>{product_name}</b>\n\n"
     if sizes:
@@ -131,24 +132,12 @@ async def send_product_card(chat_id, category_id, product_index):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text="◀️ Назад",
-                    callback_data=f"cat_prev_{category_id}_{product_index}"
-                ),
-                InlineKeyboardButton(
-                    text="✅ Оформить заказ",
-                    callback_data=f"order|{product_name}"
-                ),
-                InlineKeyboardButton(
-                    text="Вперёд ▶️",
-                    callback_data=f"cat_next_{category_id}_{product_index}"
-                )
+                InlineKeyboardButton(text="◀️ Назад", callback_data=f"cat_prev_{category_id}_{product_index}"),
+                InlineKeyboardButton(text="✅ Оформить заказ", callback_data=f"order|{product_id}"),
+                InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"cat_next_{category_id}_{product_index}")
             ],
             [
-                InlineKeyboardButton(
-                    text="🔙 К категориям",
-                    callback_data="back_to_categories"
-                )
+                InlineKeyboardButton(text="🔙 К категориям", callback_data="back_to_categories")
             ]
         ]
     )
@@ -176,7 +165,6 @@ async def ensure_categories():
             await add_category(cat)
         logging.info("Добавлены стандартные категории")
 
-
 # ---------------------- ПОКУПАТЕЛЬ: СТАРТ И КАТЕГОРИИ ----------------------
 @dp.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
@@ -190,7 +178,7 @@ async def start_handler(message: Message, state: FSMContext):
         await message.answer("⚠️ Каталог пуст. Зайдите позже.", reply_markup=ReplyKeyboardRemove())
         return
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=name, callback_data=f"cat_{cat_id}")]
+        [InlineKeyboardButton(text=name, callback_data=f"cat_{cat_id}")] 
         for cat_id, name in categories
     ] + [
         [InlineKeyboardButton(text="🤖 Помощь ИИ‑консультанта", callback_data="ai_help")]
@@ -200,7 +188,11 @@ async def start_handler(message: Message, state: FSMContext):
 
 @dp.callback_query(OrderState.selecting_category, F.data.regexp(r"^cat_\d+$"))
 async def select_category(callback: CallbackQuery, state: FSMContext):
-    cat_id = int(callback.data.split("_")[1])
+    parts = callback.data.split("_")
+    if len(parts) != 2 or parts[1] == "None":
+        await callback.answer("Ошибка: категория не найдена", show_alert=True)
+        return
+    cat_id = int(parts[1])
     total = await get_products_count(cat_id)
     if total == 0:
         await callback.answer("В этой категории пока нет товаров", show_alert=True)
@@ -250,7 +242,7 @@ async def back_to_categories(callback: CallbackQuery, state: FSMContext):
         return
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=name, callback_data=f"cat_{cat_id}")]
+            [InlineKeyboardButton(text=name, callback_data=f"cat_{cat_id}")] 
             for cat_id, name in categories
         ] + [
             [InlineKeyboardButton(text="🤖 Помощь ИИ‑консультанта", callback_data="ai_help")]
@@ -287,15 +279,20 @@ async def next_product_cat(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка загрузки")
     await callback.answer()
 
-# ---------------------- ОФОРМЛЕНИЕ ЗАКАЗА ЧЕРЕЗ МЕНЮ ----------------------
+# ---------------------- ОФОРМЛЕНИЕ ЗАКАЗА ----------------------
 @dp.callback_query(F.data.startswith("order|"))
 async def order_start(callback: CallbackQuery, state: FSMContext):
     try:
         await callback.message.delete()
     except:
         pass
-    product_name = callback.data.split("|", 1)[1]
-    if not await product_exists(product_name):
+    product_id_str = callback.data.split("|", 1)[1]
+    if not product_id_str.isdigit():
+        await callback.answer("❌ Неверный идентификатор товара.", show_alert=True)
+        return
+    product_id = int(product_id_str)
+    product_name = await get_product_name_by_id(product_id)
+    if not product_name:
         await callback.answer("❌ Товар больше недоступен.", show_alert=True)
         return
     sizes = (await get_product_with_sizes_and_prices()).get(product_name, {})
@@ -309,9 +306,9 @@ async def order_start(callback: CallbackQuery, state: FSMContext):
             if msg_id:
                 await state.update_data(catalog_message_id=msg_id)
         return
-    await state.update_data(product=product_name)
+    await state.update_data(product_id=product_id, product_name=product_name)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{size} ({price} BYN)", callback_data=f"size|{product_name}|{size}|{price}")]
+        [InlineKeyboardButton(text=f"{size} ({price} BYN)", callback_data=f"size|{product_id}|{size}|{price}")]
         for size, price in sizes.items()
     ] + [[InlineKeyboardButton(text="🔙 Назад в каталог", callback_data="back_to_catalog")]])
     msg = await callback.message.answer(f"Выберите размер для <b>{product_name}</b>:", reply_markup=keyboard)
@@ -321,8 +318,20 @@ async def order_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(OrderState.selecting_size, F.data.startswith("size|"))
 async def select_size(callback: CallbackQuery, state: FSMContext):
-    _, product_name, size, price = callback.data.split("|")
-    await state.update_data(size=size, price=int(price))
+    parts = callback.data.split("|")
+    if len(parts) != 4:
+        await callback.answer("Ошибка", show_alert=True)
+        return
+    _, product_id_str, size, price = parts
+    if not product_id_str.isdigit():
+        await callback.answer("Ошибка", show_alert=True)
+        return
+    product_id = int(product_id_str)
+    product_name = await get_product_name_by_id(product_id)
+    if not product_name:
+        await callback.answer("❌ Товар не найден", show_alert=True)
+        return
+    await state.update_data(product_id=product_id, product_name=product_name, size=size, price=int(price))
     data = await state.get_data()
     order_msg_id = data.get("order_message_id")
     if order_msg_id:
@@ -429,7 +438,10 @@ async def back_to_catalog(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "back_to_sizes")
 async def back_to_sizes(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    product_name = data.get("product")
+    product_id = data.get("product_id")
+    product_name = await get_product_name_by_id(product_id)
+    if not product_name:
+        product_name = data.get("product_name")
     sizes = (await get_product_with_sizes_and_prices()).get(product_name, {})
     order_msg_id = data.get("order_message_id")
     if order_msg_id:
@@ -438,7 +450,7 @@ async def back_to_sizes(callback: CallbackQuery, state: FSMContext):
         except:
             pass
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{size} ({price} BYN)", callback_data=f"size|{product_name}|{size}|{price}")]
+        [InlineKeyboardButton(text=f"{size} ({price} BYN)", callback_data=f"size|{product_id}|{size}|{price}")]
         for size, price in sizes.items()
     ] + [[InlineKeyboardButton(text="🔙 Назад в каталог", callback_data="back_to_catalog")]])
     msg = await callback.message.answer(f"Выберите размер для <b>{product_name}</b>:", reply_markup=keyboard)
@@ -449,7 +461,7 @@ async def back_to_sizes(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "back_to_delivery")
 async def back_to_delivery(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    product_name = data.get("product")
+    product_name = data.get("product_name")
     size = data.get("size")
     price = data.get("price")
     order_msg_id = data.get("order_message_id")
@@ -505,7 +517,6 @@ async def back_to_fio(callback: CallbackQuery, state: FSMContext):
 # ---------------------- ИИ-КОНСУЛЬТАНТ ----------------------
 @dp.callback_query(F.data == "ai_help")
 async def ai_help_callback(callback: CallbackQuery):
-    print("✅ ai_help_callback ВЫЗВАН")
     user_id = callback.from_user.id
     ai_sessions[user_id] = True
     await callback.answer("✅ ИИ‑консультант активирован")
@@ -543,7 +554,7 @@ async def forward_to_n8n_and_reply(message: Message):
         print(f"❌ Ошибка: {e}")
         await message.answer(f"Ошибка связи: {e}")
 
-# ---------------------- ОТПРАВКА ЗАКАЗА (С УВЕДОМЛЕНИЕМ АДМИНА) ----------------------
+# ---------------------- ОТПРАВКА ЗАКАЗА ----------------------
 async def send_order(message: Message, state: FSMContext, data: dict):
     order_msg_id = data.get("order_message_id")
     if order_msg_id:
@@ -554,7 +565,7 @@ async def send_order(message: Message, state: FSMContext, data: dict):
     user = message.from_user
     username = f"@{user.username}" if user.username else "Нет username"
     order_data = {
-        'product': data.get('product'),
+        'product_name': data.get('product_name'),
         'size': data.get('size'),
         'price': int(data.get('price')),
         'delivery': data.get('delivery'),
@@ -565,7 +576,6 @@ async def send_order(message: Message, state: FSMContext, data: dict):
         'user_id': user.id
     }
     await save_order(order_data)
-    # Отправляем уведомление админам (через ту же функцию, что и для n8n)
     await notify_admins_about_order(order_data)
     await message.answer("✅ Заказ отправлен! С вами свяжутся.", reply_markup=ReplyKeyboardRemove())
     await state.clear()
@@ -581,10 +591,8 @@ async def send_order(message: Message, state: FSMContext, data: dict):
     else:
         await message.answer("Каталог пуст. Нажмите /start")
 
-# ---------------------- УВЕДОМЛЕНИЕ АДМИНАМ ----------------------
 async def notify_admins_about_order(order_data: dict):
     created_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    # Если в order_data есть created_at из БД (для заказов из n8n)
     if 'created_at' in order_data and order_data['created_at']:
         try:
             dt = datetime.fromisoformat(order_data['created_at'].replace('Z', '+00:00'))
@@ -595,7 +603,7 @@ async def notify_admins_about_order(order_data: dict):
     text = (
         f"🛒 <b>НОВЫЙ ЗАКАЗ</b>\n"
         f"🕒 <i>{created_at}</i>\n\n"
-        f"👟 Товар: {order_data.get('product') or order_data.get('product_name')}\n"
+        f"👟 Товар: {order_data.get('product_name')}\n"
         f"📏 Размер: {order_data.get('size')}\n"
         f"💰 Цена: {order_data.get('price')} BYN\n"
         f"🚚 Получение: {order_data.get('delivery')}\n\n"
@@ -608,7 +616,7 @@ async def notify_admins_about_order(order_data: dict):
     if order_data.get('delivery') == "🚚 Доставка":
         text += f"\n📦 ФИО: {order_data.get('fio')}\n🏠 Адрес: {order_data.get('address')}"
 
-    photos = await get_product_photos(order_data.get('product') or order_data.get('product_name'))
+    photos = await get_product_photos(order_data.get('product_name'))
     product_photo = photos[0] if photos else None
 
     for admin_id in ADMIN_IDS:
@@ -622,7 +630,6 @@ async def notify_admins_about_order(order_data: dict):
 
 # ---------------------- HTTP ЭНДПОИНТ ДЛЯ ПРИЁМА ЗАКАЗОВ ОТ N8N ----------------------
 async def handle_n8n_order(request: web.Request) -> web.Response:
-    """Принимает заказ от n8n, сохраняет в БД и отправляет уведомление админам"""
     auth_header = request.headers.get("Authorization", "")
     if auth_header != f"Bearer {WEBHOOK_SECRET}":
         logging.warning("Неверный токен при вызове n8n эндпоинта")
@@ -646,12 +653,23 @@ async def handle_n8n_order(request: web.Request) -> web.Response:
     data.setdefault("fio", "Не указано")
     data.setdefault("address", "Самовывоз" if data.get("delivery") == "🏪 Самовывоз" else "")
     data.setdefault("username", "n8n-заказ")
-
-    await save_order(data)
-    await notify_admins_about_order(data)
+    # Преобразуем product в product_name
+    order_to_save = {
+        'product_name': data.get('product'),
+        'size': data.get('size'),
+        'price': data.get('price'),
+        'delivery': data.get('delivery'),
+        'fio': data.get('fio'),
+        'phone': data.get('phone'),
+        'address': data.get('address'),
+        'user_id': data.get('user_id'),
+        'username': data.get('username')
+    }
+    await save_order(order_to_save)
+    await notify_admins_about_order(order_to_save)
     return web.json_response({"status": "ok", "message": "Order created"})
 
-# ---------------------- АДМИНСКИЕ ФУНКЦИИ (без бэкапов) ----------------------
+# ---------------------- АДМИНСКИЕ ФУНКЦИИ ----------------------
 @dp.message(F.text == "➕ Добавить товар")
 async def admin_add_product_start(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
@@ -962,7 +980,7 @@ async def cancel_handler(message: Message, state: FSMContext):
 @dp.message()
 async def handle_all_messages(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    text = message.text.strip()
+    text = message.text.strip() if message.text else ""
     if user_id in ai_sessions and text:
         await forward_to_n8n_and_reply(message)
         return
@@ -976,13 +994,11 @@ async def handle_all_messages(message: Message, state: FSMContext):
 @dp.callback_query()
 async def catch_unknown_callback(callback: CallbackQuery):
     logging.warning(f"Неизвестный callback: {callback.data}")
-    await callback.answer(f"❓ Неизвестная команда: {callback.data}", show_alert=True)
+    await callback.answer(f"❓ Неизвестная команда", show_alert=True)
 
 # ---------------------- ЗАПУСК ----------------------
 async def main():
     await init_db()
-
-    # Отправляем стартовые сообщения
     try:
         await bot.send_message(BACKUP_CHAT_ID, "🟢 Бот запущен на Railway")
     except Exception as e:
@@ -993,7 +1009,6 @@ async def main():
         except:
             logging.error(f"Не удалось написать админу {admin_id}")
 
-    # Запускаем HTTP-сервер для n8n (один раз!)
     app = web.Application()
     app.router.add_post("/api/order_from_n8n", handle_n8n_order)
     runner = web.AppRunner(app)
@@ -1003,7 +1018,6 @@ async def main():
     await site.start()
     logging.info(f"HTTP сервер для n8n запущен на порту {port}")
 
-    # Запускаем телеграм-бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

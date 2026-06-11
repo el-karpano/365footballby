@@ -24,8 +24,6 @@ async def get_pool():
         )
     return _pool
 
-
-
 async def init_db():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -73,6 +71,7 @@ async def get_categories() -> List[Tuple[int, str]]:
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT id, name FROM categories
+            WHERE id IS NOT NULL
             ORDER BY
                 CASE name
                     WHEN '🔥 На скидке (последние размеры)' THEN 3
@@ -82,7 +81,6 @@ async def get_categories() -> List[Tuple[int, str]]:
         """)
         return [(row["id"], row["name"]) for row in rows]
 
-
 async def get_category_name(category_id: int) -> Optional[str]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -90,10 +88,12 @@ async def get_category_name(category_id: int) -> Optional[str]:
         return row["name"] if row else None
 
 async def add_category(name: str) -> bool:
+    if not name or not name.strip():
+        return False
     pool = await get_pool()
     async with pool.acquire() as conn:
         try:
-            await conn.execute("INSERT INTO categories (name) VALUES ($1)", name)
+            await conn.execute("INSERT INTO categories (name) VALUES ($1)", name.strip())
             return True
         except asyncpg.UniqueViolationError:
             return False
@@ -132,15 +132,16 @@ async def get_products_count(category_id: int = None) -> int:
 async def get_product_by_index(index: int, category_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT name FROM products WHERE category_id = $1 ORDER BY id", category_id)
+        rows = await conn.fetch("SELECT id, name FROM products WHERE category_id = $1 ORDER BY id", category_id)
         total = len(rows)
         if 0 <= index < total:
+            product_id = rows[index]["id"]
             product_name = rows[index]["name"]
             sizes = await get_product_with_sizes_and_prices()
             sizes = sizes.get(product_name, {})
             photos = await get_product_photos(product_name)
-            return product_name, sizes, photos, total
-        return None, None, None, 0
+            return product_id, product_name, sizes, photos, total
+        return None, None, None, None, 0
 
 async def get_product_photos(product_name: str) -> List[str]:
     pool = await get_pool()
@@ -206,7 +207,7 @@ async def save_order(data: dict):
                 product_name, size, price, delivery,
                 fio, phone, address, user_id, username
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        """, data.get('product'), data.get('size'), data.get('price'), data.get('delivery'),
+        """, data.get('product_name'), data.get('size'), data.get('price'), data.get('delivery'),
             data.get('fio'), data.get('phone'), data.get('address'),
             data.get('user_id'), data.get('username'))
 
@@ -257,3 +258,16 @@ async def size_exists(product_name: str, size: str) -> bool:
     async with pool.acquire() as conn:
         exists = await conn.fetchval("SELECT 1 FROM sizes WHERE product_name = $1 AND size = $2", product_name, size)
         return exists is not None
+
+# Новые функции для работы с id товаров
+async def get_product_id_by_name(product_name: str) -> Optional[int]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM products WHERE name = $1", product_name)
+        return row["id"] if row else None
+
+async def get_product_name_by_id(product_id: int) -> Optional[str]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT name FROM products WHERE id = $1", product_id)
+        return row["name"] if row else None
