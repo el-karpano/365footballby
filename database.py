@@ -2,6 +2,7 @@ import asyncpg
 import os
 import time
 import logging
+import json
 from typing import List, Tuple, Dict, Optional
 
 start = time.time()
@@ -133,10 +134,11 @@ async def get_products_count(category_id: int = None) -> int:
             count = await conn.fetchval("SELECT COUNT(*) FROM products")
         return count
 
+import json  # добавьте в начало файла
+
 async def get_product_by_index(index: int, category_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Получаем один товар со смещением index и сразу его размеры в JSON
         row = await conn.fetchrow("""
             SELECT 
                 p.id, p.name, p.photo,
@@ -151,7 +153,6 @@ async def get_product_by_index(index: int, category_id: int):
             OFFSET $2 LIMIT 1
         """, category_id, index)
         
-        # Получаем общее количество товаров в категории
         total = await conn.fetchval("SELECT COUNT(*) FROM products WHERE category_id = $1", category_id)
         
         if not row:
@@ -160,9 +161,18 @@ async def get_product_by_index(index: int, category_id: int):
         product_id = row["id"]
         product_name = row["name"]
         photos = row["photo"].split("|||") if row["photo"] else []
-        sizes_list = row["sizes_json"] or []
+        
+        # Парсим JSON, если вернулась строка
+        sizes_json = row["sizes_json"]
+        if isinstance(sizes_json, str):
+            sizes_list = json.loads(sizes_json)
+        elif isinstance(sizes_json, list):
+            sizes_list = sizes_json
+        else:
+            sizes_list = []
+        
         sizes = {item["size"]: item["price"] for item in sizes_list}
-        logging.info(f"get_product_by_index took {time.time()-start:.2f}s")
+        
         return product_id, product_name, sizes, photos, total
 
 async def get_product_photos(product_name: str) -> List[str]:
