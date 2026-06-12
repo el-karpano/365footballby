@@ -26,10 +26,10 @@ from database import (
     get_all_products, get_product_photos, get_product_with_sizes_and_prices,
     get_sizes_of_product, save_order,
     get_top_products, get_top_sizes, get_total_orders, get_total_revenue,
-    get_products_count, get_product_by_index, get_categories, get_category_name,
+    get_products_count, get_product_by_index, get_categories,
     add_category, init_db,
     product_exists, size_exists,
-    get_product_name_by_id, get_product_id_by_name
+    get_product_name_by_id, get_sizes_and_prices_by_product
 )
 
 # ---------------------- ГЛОБАЛЬНОЕ ХРАНИЛИЩЕ СЕССИЙ ИИ ----------------------
@@ -302,7 +302,7 @@ async def order_start(callback: CallbackQuery, state: FSMContext):
     if not product_name:
         await callback.answer("❌ Товар больше недоступен.", show_alert=True)
         return
-    sizes = (await get_product_with_sizes_and_prices()).get(product_name, {})
+    sizes = await get_sizes_and_prices_by_product(product_name)
     if not sizes:
         await callback.answer("Нет доступных размеров", show_alert=True)
         data = await state.get_data()
@@ -449,7 +449,7 @@ async def back_to_sizes(callback: CallbackQuery, state: FSMContext):
     product_name = await get_product_name_by_id(product_id)
     if not product_name:
         product_name = data.get("product_name")
-    sizes = (await get_product_with_sizes_and_prices()).get(product_name, {})
+    sizes = await get_sizes_and_prices_by_product(product_name)
     order_msg_id = data.get("order_message_id")
     if order_msg_id:
         try:

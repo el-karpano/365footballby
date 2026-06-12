@@ -86,11 +86,6 @@ async def get_categories() -> List[Tuple[int, str]]:
         """)
         return [(row["id"], row["name"]) for row in rows]
 
-async def get_category_name(category_id: int) -> Optional[str]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT name FROM categories WHERE id = $1", category_id)
-        return row["name"] if row else None
 
 async def add_category(name: str) -> bool:
     if not name or not name.strip():
@@ -291,12 +286,15 @@ async def size_exists(product_name: str, size: str) -> bool:
         exists = await conn.fetchval("SELECT 1 FROM sizes WHERE product_name = $1 AND size = $2", product_name, size)
         return exists is not None
 
-# Новые функции для работы с id товаров
-async def get_product_id_by_name(product_name: str) -> Optional[int]:
+async def get_sizes_and_prices_by_product(product_name: str) -> Dict[str, int]:
+    """Быстро получает размеры и цены только для одного товара."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT id FROM products WHERE name = $1", product_name)
-        return row["id"] if row else None
+        rows = await conn.fetch(
+            "SELECT size, price FROM sizes WHERE product_name = $1",
+            product_name
+        )
+        return {row["size"]: row["price"] for row in rows}
 
 async def get_product_name_by_id(product_id: int) -> Optional[str]:
     pool = await get_pool()
