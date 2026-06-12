@@ -121,6 +121,7 @@ def get_sizes_keyboard(sizes):
 async def send_product_card(chat_id, category_id, product_index):
     product_id, product_name, sizes, photos, total = await get_product_by_index(product_index, category_id)
     if not product_id:
+        logging.error(f"Не удалось получить товар: index={product_index}, category_id={category_id}")
         return None
     text = f"<b>{product_name}</b>\n\n"
     if sizes:
@@ -197,9 +198,11 @@ async def select_category(callback: CallbackQuery, state: FSMContext):
     if total == 0:
         await callback.answer("В этой категории пока нет товаров", show_alert=True)
         return
-    await state.update_data(current_category=cat_id, current_index=0)
+    await state.update_data(current_category=cat_id, current_index=0, total_products=total)
     msg_id = await send_product_card(callback.message.chat.id, cat_id, 0)
-    if msg_id:
+    if msg_id is None:
+        await callback.answer("Ошибка загрузки товара. Попробуйте позже.", show_alert=True)
+    else:
         await state.update_data(catalog_message_id=msg_id)
     await callback.answer()
 
@@ -215,6 +218,7 @@ async def prev_product_cat(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Это первый товар")
         return
     new_index = current - 1
+    # total не нужен для prev, но проверим, что индекс не отрицательный
     msg_id = await send_product_card(callback.message.chat.id, cat_id, new_index)
     if msg_id:
         data = await state.get_data()
@@ -260,14 +264,17 @@ async def next_product_cat(callback: CallbackQuery, state: FSMContext):
         return
     cat_id = int(parts[2])
     current = int(parts[3])
-    total = await get_products_count(cat_id)
+    data = await state.get_data()
+    total = data.get("total_products")
+    if total is None:
+        total = await get_products_count(cat_id)
+        await state.update_data(total_products=total)
     if current + 1 >= total:
         await callback.answer("Это последний товар")
         return
     new_index = current + 1
     msg_id = await send_product_card(callback.message.chat.id, cat_id, new_index)
     if msg_id:
-        data = await state.get_data()
         old_msg_id = data.get("catalog_message_id")
         if old_msg_id:
             try:

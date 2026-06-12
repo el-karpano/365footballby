@@ -1,6 +1,10 @@
 import asyncpg
 import os
+import time
+import logging
 from typing import List, Tuple, Dict, Optional
+
+start = time.time()
 
 DB_CONFIG = {
     "host": os.getenv("SUPABASE_HOST", "localhost"),
@@ -132,16 +136,34 @@ async def get_products_count(category_id: int = None) -> int:
 async def get_product_by_index(index: int, category_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT id, name FROM products WHERE category_id = $1 ORDER BY id", category_id)
-        total = len(rows)
-        if 0 <= index < total:
-            product_id = rows[index]["id"]
-            product_name = rows[index]["name"]
-            sizes = await get_product_with_sizes_and_prices()
-            sizes = sizes.get(product_name, {})
-            photos = await get_product_photos(product_name)
-            return product_id, product_name, sizes, photos, total
-        return None, None, None, None, 0
+        # Получаем один товар со смещением index и сразу его размеры в JSON
+        row = await conn.fetchrow("""
+            SELECT 
+                p.id, p.name, p.photo,
+                COALESCE(
+                    (SELECT json_agg(json_build_object('size', s.size, 'price', s.price))
+                     FROM sizes s WHERE s.product_name = p.name),
+                    '[]'::json
+                ) as sizes_json
+            FROM products p
+            WHERE p.category_id = $1
+            ORDER BY p.id
+            OFFSET $2 LIMIT 1
+        """, category_id, index)
+        
+        # Получаем общее количество товаров в категории
+        total = await conn.fetchval("SELECT COUNT(*) FROM products WHERE category_id = $1", category_id)
+        
+        if not row:
+            return None, None, None, None, total
+        
+        product_id = row["id"]
+        product_name = row["name"]
+        photos = row["photo"].split("|||") if row["photo"] else []
+        sizes_list = row["sizes_json"] or []
+        sizes = {item["size"]: item["price"] for item in sizes_list}
+        logging.info(f"get_product_by_index took {time.time()-start:.2f}s")
+        return product_id, product_name, sizes, photos, total
 
 async def get_product_photos(product_name: str) -> List[str]:
     pool = await get_pool()
