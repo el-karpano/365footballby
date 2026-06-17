@@ -165,7 +165,7 @@ async def send_product_card(chat_id, category_id, product_index):
     return msg.message_id
 
 async def ensure_categories():
-    from database import get_category_by_id, get_pool
+    from database import get_pool
     pool = await get_pool()
     async with pool.acquire() as conn:
         all_cats = await conn.fetch("SELECT id, name, parent_id FROM categories")
@@ -177,25 +177,25 @@ async def ensure_categories():
         "NIKE TIEMPO",
         "ADIDAS F50",
         "PUMA FUTURE",
-        "Футбольные костюмы",
-        "Вратарские перчатки",
-        "Футболки",
         "Детские размеры",
         "🔥 На скидке (последние размеры)"
     ]
 
-    if "Бутсы" not in existing_names:
-        await add_category("Бутсы")
-        logging.info("Добавлена категория 'Бутсы'")
+    root_cats = [
+        "Бутсы",
+        "Футбольные костюмы",
+        "Вратарские перчатки",
+        "Футболки"
+    ]
+
+    for cat in root_cats:
+        if cat not in existing_names:
+            await add_category(cat)
+            logging.info(f"Добавлена категория '{cat}'")
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
         boots_id = row["id"]
-
-        await conn.execute("""
-            UPDATE categories SET parent_id = $1
-            WHERE parent_id IS NULL AND name != 'Бутсы'
-        """, boots_id)
 
     for cat in boots_subcats:
         if cat not in existing_names:
