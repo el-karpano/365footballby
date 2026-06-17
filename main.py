@@ -179,14 +179,13 @@ async def ensure_categories():
         root_cats = ["Бутсы", "Футбольные костюмы", "Вратарские перчатки", "Футболки"]
 
         for cat in root_cats:
-            await conn.execute(
-                "INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING",
-                cat
-            )
+            exists = await conn.fetchval("SELECT 1 FROM categories WHERE name = $1", cat)
+            if not exists:
+                await conn.execute("INSERT INTO categories (name) VALUES ($1)", cat)
 
         row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
         if not row:
-            await conn.execute("INSERT INTO categories (name) VALUES ('Бутсы') ON CONFLICT (name) DO NOTHING")
+            await conn.execute("INSERT INTO categories (name) VALUES ('Бутсы')")
             row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
         boots_id = row["id"]
 
@@ -199,7 +198,7 @@ async def ensure_categories():
                 )
             else:
                 await conn.execute(
-                    "INSERT INTO categories (name, parent_id) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING",
+                    "INSERT INTO categories (name, parent_id) VALUES ($1, $2)",
                     cat_name, boots_id
                 )
 

@@ -106,14 +106,11 @@ async def add_category(name: str, parent_id: int = None) -> bool:
         return False
     pool = await get_pool()
     async with pool.acquire() as conn:
-        try:
-            await conn.execute(
-                "INSERT INTO categories (name, parent_id) VALUES ($1, $2)",
-                name.strip(), parent_id
-            )
-            return True
-        except asyncpg.UniqueViolationError:
+        exists = await conn.fetchval("SELECT 1 FROM categories WHERE name = $1", name.strip())
+        if exists:
             return False
+        await conn.execute("INSERT INTO categories (name, parent_id) VALUES ($1, $2)", name.strip(), parent_id)
+        return True
 
 async def delete_category(category_id: int) -> bool:
     pool = await get_pool()
