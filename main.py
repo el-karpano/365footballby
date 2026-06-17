@@ -197,6 +197,13 @@ async def ensure_categories():
         row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
         boots_id = row["id"]
 
+        for cat_name in boots_subcats:
+            if cat_name in existing_names:
+                await conn.execute(
+                    "UPDATE categories SET parent_id = $1 WHERE name = $2 AND (parent_id IS NULL OR parent_id != $1)",
+                    boots_id, cat_name
+                )
+
     for cat in boots_subcats:
         if cat not in existing_names:
             await add_category(cat, parent_id=boots_id)
