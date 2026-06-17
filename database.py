@@ -46,20 +46,6 @@ async def init_db():
             END $$
         """)
         await conn.execute("""
-            DO $$ BEGIN
-                ALTER TABLE categories ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY;
-            EXCEPTION WHEN duplicate_object THEN NULL;
-            END $$
-        """)
-        await conn.execute("""
-            DO $$ BEGIN
-                CREATE SEQUENCE IF NOT EXISTS categories_id_seq OWNED BY categories.id;
-                ALTER TABLE categories ALTER COLUMN id SET DEFAULT nextval('categories_id_seq');
-                SELECT setval('categories_id_seq', COALESCE((SELECT MAX(id) FROM categories), 0) + 1, false);
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$
-        """)
-        await conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY,
                 name TEXT UNIQUE,
