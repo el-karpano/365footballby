@@ -166,41 +166,52 @@ async def send_product_card(chat_id, category_id, product_index):
 
 async def ensure_categories():
     from database import get_pool
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM categories WHERE id IS NULL")
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM categories WHERE id IS NULL")
+            logging.info("ensure_categories: deleted NULL id rows")
 
-        boots_subcats = [
-            "NIKE MERCURIAL", "NIKE PHANTOM", "NIKE TIEMPO",
-            "ADIDAS F50", "PUMA FUTURE",
-            "Детские размеры", "🔥 На скидке (последние размеры)"
-        ]
+            boots_subcats = [
+                "NIKE MERCURIAL", "NIKE PHANTOM", "NIKE TIEMPO",
+                "ADIDAS F50", "PUMA FUTURE",
+                "Детские размеры", "🔥 На скидке (последние размеры)"
+            ]
 
-        root_cats = ["Бутсы", "Футбольные костюмы", "Вратарские перчатки", "Футболки"]
+            root_cats = ["Бутсы", "Футбольные костюмы", "Вратарские перчатки", "Футболки"]
 
-        for cat in root_cats:
-            exists = await conn.fetchval("SELECT 1 FROM categories WHERE name = $1", cat)
-            if not exists:
-                await conn.execute("INSERT INTO categories (name) VALUES ($1)", cat)
+            for cat in root_cats:
+                exists = await conn.fetchval("SELECT 1 FROM categories WHERE name = $1", cat)
+                if not exists:
+                    await conn.execute("INSERT INTO categories (name) VALUES ($1)", cat)
+                    logging.info(f"ensure_categories: created root cat '{cat}'")
 
-        row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
-        if not row:
-            await conn.execute("INSERT INTO categories (name) VALUES ('Бутсы')")
             row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
-        boots_id = row["id"]
+            if not row:
+                await conn.execute("INSERT INTO categories (name) VALUES ('Бутсы')")
+                row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
+            boots_id = row["id"]
+            logging.info(f"ensure_categories: boots_id={boots_id}")
 
-        for cat_name in boots_subcats:
-            cat_row = await conn.fetchrow("SELECT id FROM categories WHERE name = $1", cat_name)
-            if cat_row:
-                await conn.execute(
-                    "UPDATE categories SET parent_id = $1 WHERE id = $2",
-                    boots_id, cat_row["id"]
-                )
-            else:
-                await conn.execute(
-                    "INSERT INTO categories (name, parent_id) VALUES ($1, $2)",
-                    cat_name, boots_id
-                )
+            for cat_name in boots_subcats:
+                cat_row = await conn.fetchrow("SELECT id, parent_id FROM categories WHERE name = $1", cat_name)
+                if cat_row:
+                    if cat_row["parent_id"] != boots_id:
+                        await conn.execute(
+                            "UPDATE categories SET parent_id = $1 WHERE id = $2",
+                            boots_id, cat_row["id"]
+                        )
+                        logging.info(f"ensure_categories: set parent_id for '{cat_name}'")
+                else:
+                    await conn.execute(
+                        "INSERT INTO categories (name, parent_id) VALUES ($1, $2)",
+                        cat_name, boots_id
+                    )
+                    logging.info(f"ensure_categories: created subcat '{cat_name}'")
+
+            logging.info("ensure_categories: done")
+    except Exception as e:
+        logging.error(f"ensure_categories FAILED: {e}", exc_info=True)
 
 # ---------------------- ПОКУПАТЕЛЬ: СТАРТ И КАТЕГОРИИ ----------------------
 @dp.message(CommandStart())
