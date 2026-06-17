@@ -170,7 +170,6 @@ async def ensure_categories():
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM categories WHERE id IS NULL")
-            logging.info("ensure_categories: deleted NULL id rows")
 
             boots_subcats = [
                 "NIKE MERCURIAL", "NIKE PHANTOM", "NIKE TIEMPO",
@@ -180,16 +179,29 @@ async def ensure_categories():
 
             root_cats = ["Бутсы", "Футбольные костюмы", "Вратарские перчатки", "Футболки"]
 
+            max_id = await conn.fetchval("SELECT COALESCE(MAX(id), 0) FROM categories")
+            next_id = max_id + 1
+
             for cat in root_cats:
                 exists = await conn.fetchval("SELECT 1 FROM categories WHERE name = $1", cat)
                 if not exists:
-                    await conn.execute("INSERT INTO categories (name) VALUES ($1)", cat)
-                    logging.info(f"ensure_categories: created root cat '{cat}'")
+                    await conn.execute("INSERT INTO categories (id, name) VALUES ($1, $2)", next_id, cat)
+                    next_id += 1
 
             row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
-            if not row:
-                await conn.execute("INSERT INTO categories (name) VALUES ('Бутсы')")
+            if not row or row["id"] is None:
+                await conn.execute(
+                    "UPDATE categories SET id = $1 WHERE name = 'Бутсы' AND (id IS NULL)",
+                    next_id
+                )
                 row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
+                if row:
+                    next_id += 1
+
+            if not row or row["id"] is None:
+                logging.error("ensure_categories: boots_id is still None!")
+                return
+
             boots_id = row["id"]
             logging.info(f"ensure_categories: boots_id={boots_id}")
 
@@ -201,13 +213,12 @@ async def ensure_categories():
                             "UPDATE categories SET parent_id = $1 WHERE id = $2",
                             boots_id, cat_row["id"]
                         )
-                        logging.info(f"ensure_categories: set parent_id for '{cat_name}'")
                 else:
                     await conn.execute(
-                        "INSERT INTO categories (name, parent_id) VALUES ($1, $2)",
-                        cat_name, boots_id
+                        "INSERT INTO categories (id, name, parent_id) VALUES ($1, $2, $3)",
+                        next_id, cat_name, boots_id
                     )
-                    logging.info(f"ensure_categories: created subcat '{cat_name}'")
+                    next_id += 1
 
             logging.info("ensure_categories: done")
     except Exception as e:
