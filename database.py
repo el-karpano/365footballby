@@ -84,13 +84,13 @@ async def get_categories(parent_id: int = None) -> List[Tuple[int, str]]:
         if parent_id is not None:
             rows = await conn.fetch("""
                 SELECT id, name FROM categories
-                WHERE parent_id = $1
+                WHERE parent_id = $1 AND id IS NOT NULL
                 ORDER BY id
             """, parent_id)
         else:
             rows = await conn.fetch("""
                 SELECT id, name FROM categories
-                WHERE parent_id IS NULL
+                WHERE parent_id IS NULL AND id IS NOT NULL
                 ORDER BY
                     CASE name
                         WHEN '🔥 На скидке (последние размеры)' THEN 3

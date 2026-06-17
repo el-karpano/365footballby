@@ -168,8 +168,10 @@ async def ensure_categories():
     from database import get_pool
     pool = await get_pool()
     async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM categories WHERE id IS NULL")
+
         all_cats = await conn.fetch("SELECT id, name, parent_id FROM categories")
-    existing_names = {row["name"] for row in all_cats}
+    existing = {row["name"]: row for row in all_cats}
 
     boots_subcats = [
         "NIKE MERCURIAL",
@@ -181,33 +183,33 @@ async def ensure_categories():
         "🔥 На скидке (последние размеры)"
     ]
 
-    root_cats = [
-        "Бутсы",
-        "Футбольные костюмы",
-        "Вратарские перчатки",
-        "Футболки"
-    ]
+    root_cats = ["Бутсы", "Футбольные костюмы", "Вратарские перчатки", "Футболки"]
 
     for cat in root_cats:
-        if cat not in existing_names:
+        if cat not in existing:
             await add_category(cat)
             logging.info(f"Добавлена категория '{cat}'")
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
+        if not row:
+            await add_category("Бутсы")
+            row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
         boots_id = row["id"]
 
         for cat_name in boots_subcats:
-            if cat_name in existing_names:
+            cat_row = await conn.fetchrow("SELECT id FROM categories WHERE name = $1", cat_name)
+            if cat_row:
                 await conn.execute(
-                    "UPDATE categories SET parent_id = $1 WHERE name = $2 AND (parent_id IS NULL OR parent_id != $1)",
-                    boots_id, cat_name
+                    "UPDATE categories SET parent_id = $1 WHERE id = $2",
+                    boots_id, cat_row["id"]
                 )
-
-    for cat in boots_subcats:
-        if cat not in existing_names:
-            await add_category(cat, parent_id=boots_id)
-            logging.info(f"Добавлена подкатегория '{cat}'")
+            else:
+                await conn.execute(
+                    "INSERT INTO categories (name, parent_id) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING",
+                    cat_name, boots_id
+                )
+                logging.info(f"Добавлена подкатегория '{cat_name}'")
 
 # ---------------------- ПОКУПАТЕЛЬ: СТАРТ И КАТЕГОРИИ ----------------------
 @dp.message(CommandStart())
