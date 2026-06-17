@@ -170,30 +170,23 @@ async def ensure_categories():
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM categories WHERE id IS NULL")
 
-        all_cats = await conn.fetch("SELECT id, name, parent_id FROM categories")
-    existing = {row["name"]: row for row in all_cats}
+        boots_subcats = [
+            "NIKE MERCURIAL", "NIKE PHANTOM", "NIKE TIEMPO",
+            "ADIDAS F50", "PUMA FUTURE",
+            "Детские размеры", "🔥 На скидке (последние размеры)"
+        ]
 
-    boots_subcats = [
-        "NIKE MERCURIAL",
-        "NIKE PHANTOM",
-        "NIKE TIEMPO",
-        "ADIDAS F50",
-        "PUMA FUTURE",
-        "Детские размеры",
-        "🔥 На скидке (последние размеры)"
-    ]
+        root_cats = ["Бутсы", "Футбольные костюмы", "Вратарские перчатки", "Футболки"]
 
-    root_cats = ["Бутсы", "Футбольные костюмы", "Вратарские перчатки", "Футболки"]
+        for cat in root_cats:
+            await conn.execute(
+                "INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING",
+                cat
+            )
 
-    for cat in root_cats:
-        if cat not in existing:
-            await add_category(cat)
-            logging.info(f"Добавлена категория '{cat}'")
-
-    async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
         if not row:
-            await add_category("Бутсы")
+            await conn.execute("INSERT INTO categories (name) VALUES ('Бутсы') ON CONFLICT (name) DO NOTHING")
             row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
         boots_id = row["id"]
 
@@ -209,7 +202,6 @@ async def ensure_categories():
                     "INSERT INTO categories (name, parent_id) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING",
                     cat_name, boots_id
                 )
-                logging.info(f"Добавлена подкатегория '{cat_name}'")
 
 # ---------------------- ПОКУПАТЕЛЬ: СТАРТ И КАТЕГОРИИ ----------------------
 @dp.message(CommandStart())
