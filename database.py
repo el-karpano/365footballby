@@ -98,6 +98,12 @@ async def add_category(name: str) -> bool:
         except asyncpg.UniqueViolationError:
             return False
 
+async def delete_category(category_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM categories WHERE id = $1", category_id)
+        return result == "DELETE 1"
+
 async def add_product(name: str, photo_file_ids: List[str], category_id: int) -> bool:
     pool = await get_pool()
     photos_str = "|||".join(photo_file_ids) if photo_file_ids else None

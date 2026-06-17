@@ -27,7 +27,7 @@ from database import (
     get_sizes_of_product, save_order,
     get_top_products, get_top_sizes, get_total_orders, get_total_revenue,
     get_products_count, get_product_by_index, get_categories,
-    add_category, init_db,
+    add_category, delete_category, init_db,
     product_exists, size_exists,
     get_product_name_by_id, get_sizes_and_prices_by_product
 )
@@ -83,6 +83,9 @@ class AdminState(StatesGroup):
     waiting_delete_product = State()
     waiting_delete_size_product = State()
     waiting_delete_size_value = State()
+    managing_categories = State()
+    waiting_new_category_name = State()
+    waiting_delete_category = State()
 
 # ---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
 def is_admin(user_id: int) -> bool:
@@ -95,6 +98,7 @@ async def show_admin_panel(message: Message):
             [KeyboardButton(text="📏 Добавить размер")],
             [KeyboardButton(text="🗑️ Удалить товар")],
             [KeyboardButton(text="❌ Удалить размер")],
+            [KeyboardButton(text="📂 Категории")],
             [KeyboardButton(text="📦 Все товары")],
             [KeyboardButton(text="📊 Статистика")],
             [KeyboardButton(text="👤 Режим покупателя")],
@@ -152,22 +156,26 @@ async def send_product_card(chat_id, category_id, product_index):
 
 async def ensure_categories():
     cats = await get_categories()
-    if not cats:
-        default_cats = [
-            "NIKE MERCURIAL",
-            "NIKE PHANTOM",
-            "NIKE TIEMPO",
-            "ADIDAS F50",
-            "PUMA FUTURE",
-            "Футбольные костюмы",
-            "Вратарские перчатки",
-            "Футболки",
-            "Детские размеры",
-            "🔥 На скидке (последние размеры)"
-        ]
-        for cat in default_cats:
-            await add_category(cat)
-        logging.info("Добавлены стандартные категории")
+    existing_names = {name for _, name in cats}
+    default_cats = [
+        "NIKE MERCURIAL",
+        "NIKE PHANTOM",
+        "NIKE TIEMPO",
+        "ADIDAS F50",
+        "PUMA FUTURE",
+        "Футбольные костюмы",
+        "Вратарские перчатки",
+        "Футболки",
+        "Детские размеры",
+        "🔥 На скидке (последние размеры)"
+    ]
+    added = 0
+    for cat in default_cats:
+        if cat not in existing_names:
+            if await add_category(cat):
+                added += 1
+    if added:
+        logging.info(f"Добавлено {added} новых категорий")
 
 # ---------------------- ПОКУПАТЕЛЬ: СТАРТ И КАТЕГОРИИ ----------------------
 @dp.message(CommandStart())
@@ -908,6 +916,71 @@ async def admin_delete_size_confirm(message: Message, state: FSMContext):
         await message.answer(f"✅ Размер «{size}» удалён.")
     else:
         await message.answer("❌ Не удалось удалить. Возможно, такого размера уже нет.")
+    await state.clear()
+    await show_admin_panel(message)
+
+# ---------------------- УПРАВЛЕНИЕ КАТЕГОРИЯМИ ----------------------
+@dp.message(F.text == "📂 Категории")
+async def admin_categories_menu(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    categories = await get_categories()
+    cat_list = "\n".join([f"• {name} (id:{cat_id})" for cat_id, name in categories])
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить категорию")],
+            [KeyboardButton(text="🗑️ Удалить категорию")],
+            [KeyboardButton(text="◀️ Назад")],
+        ],
+        resize_keyboard=True
+    )
+    await message.answer(f"<b>📂 КАТЕГОРИИ</b>\n\n{cat_list}", reply_markup=keyboard)
+    await state.set_state(AdminState.managing_categories)
+
+@dp.message(AdminState.managing_categories, F.text == "➕ Добавить категорию")
+async def admin_add_category_start(message: Message, state: FSMContext):
+    await message.answer("Введите название новой категории:", reply_markup=admin_nav_keyboard)
+    await state.set_state(AdminState.waiting_new_category_name)
+
+@dp.message(AdminState.waiting_new_category_name)
+async def admin_add_category_confirm(message: Message, state: FSMContext):
+    if message.text in ["❌ Выход", "◀️ Назад"]:
+        await state.clear()
+        await show_admin_panel(message)
+        return
+    name = message.text.strip()
+    if not name:
+        await message.answer("❌ Название не может быть пустым. Введите название категории:")
+        return
+    if await add_category(name):
+        await message.answer(f"✅ Категория «{name}» добавлена")
+    else:
+        await message.answer("❌ Такая категория уже существует")
+    await state.clear()
+    await show_admin_panel(message)
+
+@dp.message(AdminState.managing_categories, F.text == "🗑️ Удалить категорию")
+async def admin_delete_category_start(message: Message, state: FSMContext):
+    categories = await get_categories()
+    if not categories:
+        await message.answer("❌ Нет категорий для удаления.")
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=name, callback_data=f"delcat_{cat_id}")] for cat_id, name in categories
+    ])
+    await message.answer("Выберите категорию для удаления:", reply_markup=keyboard)
+
+@dp.callback_query(AdminState.managing_categories, F.data.startswith("delcat_"))
+async def admin_delete_category_confirm(callback: CallbackQuery, state: FSMContext):
+    cat_id = int(callback.data.split("_")[1])
+    if await delete_category(cat_id):
+        await callback.answer("✅ Категория удалена", show_alert=True)
+    else:
+        await callback.answer("❌ Не удалось удалить", show_alert=True)
+    await state.clear()
+    await show_admin_panel(callback.message)
+
+@dp.message(AdminState.managing_categories, F.text == "◀️ Назад")
+async def admin_categories_back(message: Message, state: FSMContext):
     await state.clear()
     await show_admin_panel(message)
 
