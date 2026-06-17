@@ -66,6 +66,7 @@ dp.callback_query.middleware(ExceptionMiddleware())
 # ---------------------- СОСТОЯНИЯ ----------------------
 class OrderState(StatesGroup):
     selecting_category = State()
+    selecting_subcategory = State()
     selecting_size = State()
     choosing_delivery = State()
     waiting_phone = State()
@@ -74,6 +75,7 @@ class OrderState(StatesGroup):
 
 class AdminState(StatesGroup):
     choosing_category = State()
+    choosing_subcategory = State()
     waiting_product_name = State()
     waiting_product_photo = State()
     waiting_more_photos = State()
@@ -134,6 +136,14 @@ async def send_product_card(chat_id, category_id, product_index):
     else:
         text += "Нет доступных размеров\n"
     text += f"\nТовар {product_index + 1} из {total}"
+    from database import get_category_by_id
+    cat_info = await get_category_by_id(category_id)
+    if cat_info and cat_info["parent_id"]:
+        back_callback = f"back_to_subcats_{cat_info['parent_id']}_{category_id}"
+        back_text = "🔙 К подкатегориям"
+    else:
+        back_callback = "back_to_categories"
+        back_text = "🔙 К категориям"
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -142,7 +152,7 @@ async def send_product_card(chat_id, category_id, product_index):
                 InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"cat_next_{category_id}_{product_index}")
             ],
             [
-                InlineKeyboardButton(text="🔙 К категориям", callback_data="back_to_categories")
+                InlineKeyboardButton(text=back_text, callback_data=back_callback)
             ]
         ]
     )
@@ -155,9 +165,13 @@ async def send_product_card(chat_id, category_id, product_index):
     return msg.message_id
 
 async def ensure_categories():
-    cats = await get_categories()
-    existing_names = {name for _, name in cats}
-    default_cats = [
+    from database import get_category_by_id, get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        all_cats = await conn.fetch("SELECT id, name, parent_id FROM categories")
+    existing_names = {row["name"] for row in all_cats}
+
+    boots_subcats = [
         "NIKE MERCURIAL",
         "NIKE PHANTOM",
         "NIKE TIEMPO",
@@ -169,13 +183,24 @@ async def ensure_categories():
         "Детские размеры",
         "🔥 На скидке (последние размеры)"
     ]
-    added = 0
-    for cat in default_cats:
+
+    if "Бутсы" not in existing_names:
+        await add_category("Бутсы")
+        logging.info("Добавлена категория 'Бутсы'")
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM categories WHERE name = 'Бутсы'")
+        boots_id = row["id"]
+
+        await conn.execute("""
+            UPDATE categories SET parent_id = $1
+            WHERE parent_id IS NULL AND name != 'Бутсы'
+        """, boots_id)
+
+    for cat in boots_subcats:
         if cat not in existing_names:
-            if await add_category(cat):
-                added += 1
-    if added:
-        logging.info(f"Добавлено {added} новых категорий")
+            await add_category(cat, parent_id=boots_id)
+            logging.info(f"Добавлена подкатегория '{cat}'")
 
 # ---------------------- ПОКУПАТЕЛЬ: СТАРТ И КАТЕГОРИИ ----------------------
 @dp.message(CommandStart())
@@ -205,12 +230,41 @@ async def select_category(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка: категория не найдена", show_alert=True)
         return
     cat_id = int(parts[1])
+    subcats = await get_categories(parent_id=cat_id)
+    if subcats:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=name, callback_data=f"subcat_{cat_id}_{sub_id}")]
+            for sub_id, name in subcats
+        ] + [
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_categories")]
+        ])
+        await callback.message.edit_text("Выберите подкатегорию:", reply_markup=keyboard)
+        await state.set_state(OrderState.selecting_subcategory)
+        await callback.answer()
+        return
     total = await get_products_count(cat_id)
     if total == 0:
         await callback.answer("В этой категории пока нет товаров", show_alert=True)
         return
     await state.update_data(current_category=cat_id, current_index=0, total_products=total)
     msg_id = await send_product_card(callback.message.chat.id, cat_id, 0)
+    if msg_id is None:
+        await callback.answer("Ошибка загрузки товара. Попробуйте позже.", show_alert=True)
+    else:
+        await state.update_data(catalog_message_id=msg_id)
+    await callback.answer()
+
+@dp.callback_query(OrderState.selecting_subcategory, F.data.regexp(r"^subcat_\d+_\d+$"))
+async def select_subcategory(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    cat_id = int(parts[1])
+    sub_id = int(parts[2])
+    total = await get_products_count(sub_id)
+    if total == 0:
+        await callback.answer("В этой подкатегории пока нет товаров", show_alert=True)
+        return
+    await state.update_data(current_category=sub_id, current_index=0, total_products=total, parent_category=cat_id)
+    msg_id = await send_product_card(callback.message.chat.id, sub_id, 0)
     if msg_id is None:
         await callback.answer("Ошибка загрузки товара. Попробуйте позже.", show_alert=True)
     else:
@@ -265,6 +319,37 @@ async def back_to_categories(callback: CallbackQuery, state: FSMContext):
     )
     await callback.message.answer("Выберите категорию:", reply_markup=keyboard)
     await state.set_state(OrderState.selecting_category)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("back_to_subcats_"))
+async def back_to_subcategories(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    cat_id = int(parts[2])
+    sub_id = int(parts[3])
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except:
+        pass
+    subcats = await get_categories(parent_id=cat_id)
+    if not subcats:
+        categories = await get_categories()
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=name, callback_data=f"cat_{cat_id}")] for cat_id, name in categories
+        ] + [
+            [InlineKeyboardButton(text="🤖 Помощь ИИ‑консультанта", callback_data="ai_help")]
+        ])
+        await callback.message.answer("Выберите категорию:", reply_markup=keyboard)
+        await state.set_state(OrderState.selecting_category)
+    else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=name, callback_data=f"subcat_{cat_id}_{sub_id}")]
+            for sub_id, name in subcats
+        ] + [
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_categories")]
+        ])
+        await callback.message.answer("Выберите подкатегорию:", reply_markup=keyboard)
+        await state.set_state(OrderState.selecting_subcategory)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("cat_next_"))
@@ -704,7 +789,25 @@ async def admin_add_product_start(message: Message, state: FSMContext):
 @dp.callback_query(StateFilter(AdminState.choosing_category), F.data.startswith("admin_cat_"))
 async def admin_choose_category(callback: CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split("_")[2])
-    await state.update_data(category_id=cat_id)
+    subcats = await get_categories(parent_id=cat_id)
+    if subcats:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=name, callback_data=f"admin_subcat_{cat_id}_{sub_id}")]
+            for sub_id, name in subcats
+        ])
+        await callback.message.edit_text("Выберите подкатегорию:", reply_markup=keyboard)
+        await state.set_state(AdminState.choosing_subcategory)
+    else:
+        await state.update_data(category_id=cat_id)
+        await state.set_state(AdminState.waiting_product_name)
+        await callback.message.answer("Введите название товара:", reply_markup=admin_nav_keyboard)
+    await callback.answer()
+
+@dp.callback_query(StateFilter(AdminState.choosing_subcategory), F.data.startswith("admin_subcat_"))
+async def admin_choose_subcategory(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    sub_id = int(parts[3])
+    await state.update_data(category_id=sub_id)
     await state.set_state(AdminState.waiting_product_name)
     await callback.message.answer("Введите название товара:", reply_markup=admin_nav_keyboard)
     await callback.answer()
@@ -923,8 +1026,14 @@ async def admin_delete_size_confirm(message: Message, state: FSMContext):
 @dp.message(F.text == "📂 Категории")
 async def admin_categories_menu(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    categories = await get_categories()
-    cat_list = "\n".join([f"• {name} (id:{cat_id})" for cat_id, name in categories])
+    root_cats = await get_categories()
+    cat_lines = []
+    for cat_id, name in root_cats:
+        cat_lines.append(f"📂 <b>{name}</b> (id:{cat_id})")
+        subcats = await get_categories(parent_id=cat_id)
+        for sub_id, sub_name in subcats:
+            cat_lines.append(f"   └ {sub_name} (id:{sub_id})")
+    cat_list = "\n".join(cat_lines)
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Добавить категорию")],

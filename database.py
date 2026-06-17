@@ -35,8 +35,15 @@ async def init_db():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS categories (
                 id SERIAL PRIMARY KEY,
-                name TEXT UNIQUE
+                name TEXT UNIQUE,
+                parent_id INTEGER DEFAULT NULL
             )
+        """)
+        await conn.execute("""
+            DO $$ BEGIN
+                ALTER TABLE categories ADD COLUMN IF NOT EXISTS parent_id INTEGER DEFAULT NULL;
+            EXCEPTION WHEN duplicate_column THEN NULL;
+            END $$
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
@@ -71,29 +78,39 @@ async def init_db():
             )
         """)
 
-async def get_categories() -> List[Tuple[int, str]]:
+async def get_categories(parent_id: int = None) -> List[Tuple[int, str]]:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT id, name FROM categories
-            WHERE id IS NOT NULL
-            ORDER BY
-                CASE name
-                    WHEN '🔥 На скидке (последние размеры)' THEN 3
-                    WHEN 'Детские размеры' THEN 2
-                    ELSE 1
-                END, id
-        """)
+        if parent_id is not None:
+            rows = await conn.fetch("""
+                SELECT id, name FROM categories
+                WHERE parent_id = $1
+                ORDER BY id
+            """, parent_id)
+        else:
+            rows = await conn.fetch("""
+                SELECT id, name FROM categories
+                WHERE parent_id IS NULL
+                ORDER BY
+                    CASE name
+                        WHEN '🔥 На скидке (последние размеры)' THEN 3
+                        WHEN 'Детские размеры' THEN 2
+                        ELSE 1
+                    END, id
+            """)
         return [(row["id"], row["name"]) for row in rows]
 
 
-async def add_category(name: str) -> bool:
+async def add_category(name: str, parent_id: int = None) -> bool:
     if not name or not name.strip():
         return False
     pool = await get_pool()
     async with pool.acquire() as conn:
         try:
-            await conn.execute("INSERT INTO categories (name) VALUES ($1)", name.strip())
+            await conn.execute(
+                "INSERT INTO categories (name, parent_id) VALUES ($1, $2)",
+                name.strip(), parent_id
+            )
             return True
         except asyncpg.UniqueViolationError:
             return False
@@ -103,6 +120,14 @@ async def delete_category(category_id: int) -> bool:
     async with pool.acquire() as conn:
         result = await conn.execute("DELETE FROM categories WHERE id = $1", category_id)
         return result == "DELETE 1"
+
+async def get_category_by_id(category_id: int) -> Optional[Dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id, name, parent_id FROM categories WHERE id = $1", category_id)
+        if row:
+            return {"id": row["id"], "name": row["name"], "parent_id": row["parent_id"]}
+        return None
 
 async def add_product(name: str, photo_file_ids: List[str], category_id: int) -> bool:
     pool = await get_pool()
@@ -293,7 +318,6 @@ async def size_exists(product_name: str, size: str) -> bool:
         return exists is not None
 
 async def get_sizes_and_prices_by_product(product_name: str) -> Dict[str, int]:
-    """Быстро получает размеры и цены только для одного товара."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
