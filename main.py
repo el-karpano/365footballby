@@ -346,8 +346,8 @@ async def back_to_categories(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("back_to_subcats_"))
 async def back_to_subcategories(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
-    cat_id = int(parts[2])
-    sub_id = int(parts[3])
+    cat_id = int(parts[-2])
+    sub_id = int(parts[-1])
     await state.clear()
     try:
         await callback.message.delete()
